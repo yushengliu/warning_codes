@@ -1442,15 +1442,12 @@ if __name__ == "__main__":
         generate_datafile(provinces)
 
     # 定时跑程序
-    if 0:
+    if 1:
         scheduler = BlockingScheduler()
         # scheduler.add_job(generate_datafile, 'interval', hours=3)
         scheduler.add_job(generate_datafile, 'cron', hour='7-23/2', args=(provinces, ))
         scheduler.start()
 
-    # test git
-    if 1:
-        print('zenmezhemefuza')
 
 
 
