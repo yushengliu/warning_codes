@@ -463,7 +463,7 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
             # data_id = df_event[df_event['count_comment']==df_event['count_comment'].max()]['data_id'].values[0]
             # weibo_content = df_event[df_event['count_comment']==df_event['count_comment'].max()]['content'].values[0]
             # data_ids.append(data_id)
-            print("%d/%d:%s"%(events_head_ids.index(events_head_id), len(events_head_ids), events_head_id))
+            print("\r%d/%d:%s"%(events_head_ids.index(events_head_id), len(events_head_ids), events_head_id), end='')
             data_id_max = max_comment_dataids[events_head_ids.index(events_head_id)]
             data_ids_chosen = df_warning_details[df_warning_details['events_head_id']==events_head_id][['count_comment','data_id']].sort_values(by=['count_comment'], ascending=False)["data_id"].tolist()
             merge_comments = []

@@ -1329,8 +1329,8 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
                     if gov_codes[i] not in df_2861_county.index.values:
                         continue
                     # if gov_code in df_2861_county.index.values:
-                    p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments))
-                    # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details)
+                    # p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments))
+                    generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details)
                     time_loop1 = time.time()
                     print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒'%((count*100/2852), (time_loop1-time_loop_start), (time_loop1-time_loop_start)*(2852-count)/count), end="")
                     
