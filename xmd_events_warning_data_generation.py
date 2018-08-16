@@ -181,7 +181,7 @@ def match_warning_keywords_frontend(content, type="sensitive"):
 
 
 trace_db_info = {
-    "host": "112.74.172.175",
+    "host": "39.108.127.36",
     "port": "5432",
     "user": "postgres",
     "pwd": "jiatao",
@@ -287,7 +287,7 @@ def get_events_trace_info(events_head_id, limit=0, gov_id=None):
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sql)
     get_trace_time = time.time()
-    print("Single Process-%s get trace time: %s" % (os.getpid(), (get_trace_time - in_time)), flush=True)
+    # print("Single Process-%s get trace time: %s" % (os.getpid(), (get_trace_time - in_time)), flush=True)
     return rows
 
 
@@ -318,7 +318,7 @@ def get_events_detail_weibo(events_head_id, with_comments=True, search_cnt=None,
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sql)
     get_detail_time = time.time()
-    print("\rSingle Process-%s get detail time: %s" % (os.getpid(), (get_detail_time - in_time)), flush=True, end='')
+    # print("Single Process-%s get detail time: %s" % (os.getpid(), (get_detail_time - in_time)), flush=True)
     return rows
 
 
@@ -367,10 +367,14 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     K_share = parameters['K_share']
     
     # 取事件
+    # if record_now:
     if events_limit is None:
         running_seed_list = get_running_trace_seed_list(events_type=events_type, record_now=record_now)
     else:
         running_seed_list = get_running_trace_seed_list(events_type=events_type, record_now=record_now, limit=events_limit)
+    # 取历史数据 —— events_head_id有重复
+    # else:
+
 
     seed_time = time.time()
     print("Get running seeds done: %s" % (seed_time - start_time), flush=True)
@@ -383,6 +387,18 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     #         continue
     #     df_basic_events.drop(df_basic_events.index[(df_basic_events['gov_id'] == gov_id) & (df_basic_events.sync_time != df_basic_events[df_basic_events['gov_id'] == gov_id]['sync_time'].max())], inplace=True)
     # df_basic_events.reset_index(drop=True, inplace=True)
+
+    # 对历史事件的events_head_id去重 —— 历史事件的events_head_id有重复啊怒！！！-2018/8/17
+    if not record_now:
+        events_head_ids_origin = list(df_basic_events['events_head_id'])
+        events_head_ids_exact = set(events_head_ids_origin)
+        for events_head_id in events_head_ids_exact:
+            if events_head_ids_origin.count(events_head_id) <= 1:
+                continue
+            df_basic_events.drop(df_basic_events.index[(df_basic_events['events_head_id'] == events_head_id) & (
+                    df_basic_events.sync_time != df_basic_events[df_basic_events['events_head_id'] == events_head_id][
+                'sync_time'].max())], inplace=True)
+
 
     # 删掉高新区的数据 —— 暂时没法上前端
     events_gov_ids = df_basic_events['gov_id'].tolist()
@@ -464,6 +480,12 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
             # weibo_content = df_event[df_event['count_comment']==df_event['count_comment'].max()]['content'].values[0]
             # data_ids.append(data_id)
             print("\r%d/%d:%s"%(events_head_ids.index(events_head_id), len(events_head_ids), events_head_id), end='', flush=True)
+
+            # # 调试
+            # if 1:
+            #     if events_head_id != 'e984d389fd4121977d90980ee8f1a870':
+            #         continue
+
             data_id_max = max_comment_dataids[events_head_ids.index(events_head_id)]
             data_ids_chosen = df_warning_details[df_warning_details['events_head_id']==events_head_id][['count_comment','data_id']].sort_values(by=['count_comment'], ascending=False)["data_id"].tolist()
             merge_comments = []
@@ -480,7 +502,10 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
                     else:
                         data_id = data_ids_chosen[j]
                 # 最大评论数为0， 直接break 不再循环
+                # a = df_warning_details.loc[(df_warning_details['data_id'] == data_id)&(df_warning_details['events_head_id']==events_head_id), 'count_comment']
+                # b = int(a)
                 if int(df_warning_details.loc[(df_warning_details['data_id'] == data_id)&(df_warning_details['events_head_id']==events_head_id), 'count_comment']) == 0:
+                    merge_comments.extend([{"content":"无"}])
                     break
                 for i in range(10):
                     if len(merge_comments) >= COMMENTS_LIMIT:

@@ -500,7 +500,6 @@ def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning
     warning_map_data_list.extend(warning_map_data)
     warning_map_data_name_list.extend(warning_map_data_names)
 
-
     # 事件走势图 —— 影响力指数、(速度、加速度（、总微博数、评论数、转发数）) —— 2018/8/2 只画影响力指数的图，速度/加速度不要了
     warning_indexes_data, warning_indexes_names_list = get_warning_indexes_lines_data(df_warning_trace_info,
                                                                                       events_head_ids, events_short_dict, gov_names,
@@ -508,7 +507,6 @@ def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning
                                                                                       nearest_trace_time, record_now)
     warning_line_data_list.extend(warning_indexes_data)
     warning_line_data_name_list.extend(warning_indexes_names_list)
-
 
     # # 事件关键词 —— 官职、敏感词、部门，最多20个  —— 2018/8/2 不需要关键词的图了，转换成list_desc的文本形式
     # warning_words_data, warning_words_names_list = get_warning_words_lines_data(df_warning_keywords, events_head_ids,events_short_dict,
@@ -1270,7 +1268,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
     for node_code in warning_dict.keys():
 
-        if 1:
+        if 0:
             # 先不管环境
             if node_code == "ENV_POTENTIAL":
                 continue
@@ -1286,6 +1284,10 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         events_type = warning_dict[node_code]["events_type"]
         if 1:
             df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type)
+
+        # 调试环境数据
+        if 0:
+            df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type, record_now=False, events_limit=history_events_limit)
 
         # 先用读文件来调试
         if 0:
@@ -1329,8 +1331,8 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
                     if gov_codes[i] not in df_2861_county.index.values:
                         continue
                     # if gov_code in df_2861_county.index.values:
-                    # p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments))
-                    generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details)
+                    p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments))
+                    # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments)
                     time_loop1 = time.time()
                     print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒'%((count*100/2852), (time_loop1-time_loop_start), (time_loop1-time_loop_start)*(2852-count)/count), end="")
                     
@@ -1437,12 +1439,12 @@ if __name__ == "__main__":
     # provinces = ['110101', '510704']
 
     # test
-    if 1:
+    if 0:
         provinces = ['110101', '510704']
         generate_datafile(provinces)
 
     # 定时跑程序
-    if 0:
+    if 1:
         scheduler = BlockingScheduler()
         # scheduler.add_job(generate_datafile, 'interval', hours=3)
         scheduler.add_job(generate_datafile, 'cron', hour='7-23/2', args=(provinces, ))
