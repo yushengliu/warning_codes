@@ -179,7 +179,6 @@ def match_warning_keywords_frontend(content, type="sensitive"):
     return match_results
 
 
-
 trace_db_info = {
     "host": "39.108.127.36",
     "port": "5432",

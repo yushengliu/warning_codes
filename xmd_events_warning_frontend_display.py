@@ -237,20 +237,30 @@ def get_mixed_line_dict(title, subtitle, df_id, line_type=False, point_width=20,
 
 # 通用接口：生成多line类型的图——df_data：包括所有lines的数据【column用标志位替代，如a,b,c……】，和x轴的刻度【column名为x_name】
 # df_info: 以lines数据的标志位为index, 含两列，lines的name和对应每根线的color/style/dashStyle; xfont: 横轴的样式-{"xfont":18,"fontWeight":"bold","color":"#333"},//fontWeight:bold||normal；linewith：加粗的那根线（type为line）的宽度设置；ZeroMin=True:保证最小值大于0时，取纵轴最小为0--保证绝对位置
-def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=False, nodeshow=False, linewith=None, xfont=None, ZeroMin=True):
+def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=False, nodeshow=False, linewith=None, xfont=None, ZeroMin=True, signlist=None, signname=None):
     lines_graph_dict = {}
     lines_graph_dict["type"] = "line"
     lines_graph_dict["title"] = title
     lines_graph_dict["subtitle"] = subtitle
     data_detail = {}
+    # 针对事件预警特殊处理，为了之后将需要标点的事件指数线的数据放在line_list第一位 —— 保证事件指数线的sign为'event'
+    data_signs = [i for i in list(df_data) if i != "x_name" and i != 'event']
+    if 'event' in list(df_data):
+        data_signs.insert(0, 'event')
+
     if linewith:
         data_detail['linewith'] = linewith
     if xfont is not None:
         data_detail['xfont'] = xfont
+    # signlist控制背景着色的区域 —— 分级预警
+    if signlist is not None:
+        data_detail['signlist'] = signlist
+    # signname对应不同背景着色区域的级别
+    if signname is not None:
+        data_detail['signname'] = signname
     data_detail["fontshow"] = fontshow
     data_detail["nodeshow"] = nodeshow
     data_detail["xAxis_name"] = list(df_data["x_name"])
-    data_signs = [i for i in list(df_data) if i != "x_name"]
     line_list = []
     all_data_list = []
     for sign in data_signs:
@@ -263,7 +273,14 @@ def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=Fal
             line_dict[col_type] = df_info.loc[sign, col_type]
         line_dict["data"] = list(df_data[sign])
         line_list.append(line_dict)
-        all_data_list.extend(list(df_data[sign]))
+        # 可能会有传dict而非值的情况，这里做一下判断
+        # all_data_list.extend(list(df_data[sign]))
+        for i in df_data[sign]:
+            if isinstance(i, int) or isinstance(i, float):
+                all_data_list.append(i)
+            if isinstance(i, str):
+                all_data_list.append(eval(i)['y'])
+
     data_detail["line_list"] = line_list
     if ZeroMin:
         if min(all_data_list) > 0:
@@ -327,11 +344,13 @@ def get_warning_indexes_lines_data(df_warning_trace_info, events_head_ids, event
     index_cols = ['weibo_value']
     index_names = ['事件影响力指数']
     for events_head_id in events_head_ids:
-        df_event = df_warning_trace_info.loc[df_warning_trace_info['events_head_id'] == events_head_id, :].reset_index(
-            drop=True)
+        df_event = df_warning_trace_info.loc[df_warning_trace_info['events_head_id'] == events_head_id, :].reset_index(drop=True)
         df_event.loc[:, 'do_time'] = df_event.loc[:, 'do_time'].apply(lambda x: str(x).split('.')[0])
         df_event = df_event.sort_values(by=['do_time']).reset_index(drop=True)  # , inplace=True
+        # 越改越只针对指数了
         for index_col in index_cols:
+            if index_col != 'weibo_value':
+                continue
             if record_now:
                 title = "%s: %s变化趋势" % (
                 gov_names[events_head_ids.index(events_head_id)], index_names[index_cols.index(index_col)])
@@ -365,6 +384,8 @@ def get_warning_indexes_lines_data(df_warning_trace_info, events_head_ids, event
             y_name = index_names[index_cols.index(index_col)]
             linewidth = 3
             xfont = {"xfont":10, "fontWeight":"normal", "color":FT_PURE_WHITE}
+            # signname = ['A级', 'B级', 'C级']
+            # signlist = [df_event[index_col]]
             index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont)
             # index_line_dict = get_mixed_line_dict(title, subtitle, df_id, tips=tips)
             warning_line_data_list.append(index_line_dict)
