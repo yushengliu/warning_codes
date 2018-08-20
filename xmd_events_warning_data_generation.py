@@ -286,7 +286,7 @@ def get_events_trace_info(events_head_id, limit=0, gov_id=None):
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sql)
     get_trace_time = time.time()
-    # print("Single Process-%s get trace time: %s" % (os.getpid(), (get_trace_time - in_time)), flush=True)
+    print("Single Process-%s get trace time: %s" % (os.getpid(), (get_trace_time - in_time)), flush=True)
     return rows
 
 
@@ -317,7 +317,7 @@ def get_events_detail_weibo(events_head_id, with_comments=True, search_cnt=None,
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sql)
     get_detail_time = time.time()
-    # print("Single Process-%s get detail time: %s" % (os.getpid(), (get_detail_time - in_time)), flush=True)
+    print("Single Process-%s get detail time: %s" % (os.getpid(), (get_detail_time - in_time)), flush=True)
     return rows
 
 

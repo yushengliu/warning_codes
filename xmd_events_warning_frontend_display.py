@@ -1289,7 +1289,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
     for node_code in warning_dict.keys():
 
-        if 0:
+        if 1:
             # 先不管环境
             if node_code == "ENV_POTENTIAL":
                 continue
@@ -1460,12 +1460,12 @@ if __name__ == "__main__":
     # provinces = ['110101', '510704']
 
     # test
-    if 0:
+    if 1:
         provinces = ['110101', '510704']
         generate_datafile(provinces)
 
     # 定时跑程序
-    if 1:
+    if 0:
         scheduler = BlockingScheduler()
         # scheduler.add_job(generate_datafile, 'interval', hours=3)
         scheduler.add_job(generate_datafile, 'cron', hour='7-23/2', args=(provinces, ))
