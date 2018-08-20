@@ -387,16 +387,16 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     #     df_basic_events.drop(df_basic_events.index[(df_basic_events['gov_id'] == gov_id) & (df_basic_events.sync_time != df_basic_events[df_basic_events['gov_id'] == gov_id]['sync_time'].max())], inplace=True)
     # df_basic_events.reset_index(drop=True, inplace=True)
 
-    # 对历史事件的events_head_id去重 —— 历史事件的events_head_id有重复啊怒！！！-2018/8/17
-    if not record_now:
-        events_head_ids_origin = list(df_basic_events['events_head_id'])
-        events_head_ids_exact = set(events_head_ids_origin)
-        for events_head_id in events_head_ids_exact:
-            if events_head_ids_origin.count(events_head_id) <= 1:
-                continue
-            df_basic_events.drop(df_basic_events.index[(df_basic_events['events_head_id'] == events_head_id) & (
-                    df_basic_events.sync_time != df_basic_events[df_basic_events['events_head_id'] == events_head_id][
-                'sync_time'].max())], inplace=True)
+    # 对历史事件的events_head_id去重 —— 历史事件的events_head_id有重复啊怒！！！-2018/8/17  --当前事件也要去重。。。尼玛。。2018/8/20
+    # if not record_now:
+    events_head_ids_origin = list(df_basic_events['events_head_id'])
+    events_head_ids_exact = set(events_head_ids_origin)
+    for events_head_id in events_head_ids_exact:
+        if events_head_ids_origin.count(events_head_id) <= 1:
+            continue
+        df_basic_events.drop(df_basic_events.index[(df_basic_events['events_head_id'] == events_head_id) & (
+                df_basic_events.sync_time != df_basic_events[df_basic_events['events_head_id'] == events_head_id][
+            'sync_time'].max())], inplace=True)
 
 
     # 删掉高新区的数据 —— 暂时没法上前端
