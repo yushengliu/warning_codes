@@ -130,6 +130,7 @@ gov_department_keyword_new = \
     u"特警队|防暴警察|维稳办|安全局|档案局|物价局|空管局|执法局|管委会|测绘局|勘测局|勘探局|" \
     u"有关部门|相关部门|政府部门|医院|学校|城管|督察组|中学|小学|幼儿园"
 
+
 # 获取敏感词库信息
 def get_sensitive_word_list():
     t_file_in = './data/sensitive_word_userdict.txt'
@@ -397,6 +398,8 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         df_basic_events.drop(df_basic_events.index[(df_basic_events['events_head_id'] == events_head_id) & (
                 df_basic_events.sync_time != df_basic_events[df_basic_events['events_head_id'] == events_head_id][
             'sync_time'].max())], inplace=True)
+
+    df_basic_events.reset_index(drop=True, inplace=True)
 
 
     # 删掉高新区的数据 —— 暂时没法上前端

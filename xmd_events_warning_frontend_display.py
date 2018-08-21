@@ -157,11 +157,13 @@ def write_client_datafile_json(target_dir_path, file_name, postfix, ret_content)
     return
 
 
-# 隐患接口：画有柱子的地图
-def get_column_map_dict(title, subtitle, df_id, tips=None, column_names=None):
+# 隐患接口：画有柱子的地图 —— 改一下， title和subtitle默认不给
+def get_column_map_dict( df_id, title=None, subtitle=None, tips=None, column_names=None):
     map_dict = {}
-    map_dict["title"] = title
-    map_dict["subtitle"] = subtitle
+    if title is not None:
+        map_dict["title"] = title
+    if subtitle is not None:
+        map_dict["subtitle"] = subtitle
     map_dict["type"] = "columnMap"
     map_dict["geo_data"] = "2861_county_echars_geo"
     details = {}
@@ -295,7 +297,7 @@ def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=Fal
 
 
 # 预警柱子分布图
-def get_warning_map_data(node_code, newly_weibo_values, gov_names, parameters, version_date, record_now):
+def get_warning_map_data(node_code, newly_weibo_values, gov_names, events_links, parameters, version_date, record_now):
     warning_map_data_list = []
     warning_map_data_name_list = []
     a_thd = parameters['A_WARNING_Thd']
@@ -304,32 +306,54 @@ def get_warning_map_data(node_code, newly_weibo_values, gov_names, parameters, v
     event_type = warning_dict[node_code]["events_model"]
     thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
-    df_column_in_trace = pd.DataFrame({"value": newly_weibo_values, "name": gov_names, "column_type": "a", "column_color":FT_SOBER_BLUE})
+    grades = ["A级", "B级", "C级"]
+    df_column_in_trace = pd.DataFrame({"value": newly_weibo_values, "name": gov_names, "link": events_links, "column_type": "a", "column_color":FT_SOBER_BLUE})
     df_column_in_trace["rank"] = df_column_in_trace["value"].rank(ascending=False)
-    if record_now:
-        title = "2861区县%s隐患-追踪中" % event_type
-        subtitle = "更新时间：%s" % str(version_date).split('.')[0]
-    else:
-        title = "2861区县%s隐患-历史追踪事件" % event_type
-        subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
-    column_map_trace_dict = get_column_map_dict(title, subtitle, df_column_in_trace)
+    # if record_now:
+    #     title = "2861区县%s隐患-追踪中" % event_type
+    #     subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+    # else:
+    #     title = "2861区县%s隐患-历史追踪事件" % event_type
+    #     subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
+    # column_map_trace_dict = get_column_map_dict(title, subtitle, df_column_in_trace)
+    column_map_trace_dict = get_column_map_dict(df_column_in_trace)
     warning_map_data_list.append(column_map_trace_dict)
     warning_map_data_name_list.append('warning_column_trace_map')
 
-    # 分级画事件地图
-    for grade in thd_dict.keys():
-        df_column = deepcopy(df_column_in_trace[df_column_in_trace["value"] >= thd_dict[grade]])
-        df_column["column_color"] = color_dict[grade]
-        df_column["rank"] = df_column["value"].rank(ascending=False)
-        if record_now:
-            title = "2861区县%s隐患-%s预警中"%(event_type, grade)
-            subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+    # # 分级画事件地图 —— 各级不能有交叉 2018/8/20
+    # for grade in thd_dict.keys():
+    #     df_column = deepcopy(df_column_in_trace[df_column_in_trace["value"] >= thd_dict[grade]])
+    #     df_column["column_color"] = color_dict[grade]
+    #     df_column["rank"] = df_column["value"].rank(ascending=False)
+    #     if record_now:
+    #         title = "2861区县%s隐患-%s预警中"%(event_type, grade)
+    #         subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+    #     else:
+    #         title = "2861区县%s隐患-历史%s事件" % (event_type, grade)
+    #         subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
+    #     column_map_dict = get_column_map_dict(title, subtitle, df_column)
+    #     warning_map_data_list.append(column_map_dict)
+    #     warning_map_data_name_list.append('warning_column_%s_map'%grade[0])
+
+    # 分级画事件地图 —— 各级不能有交叉 2018/8/20
+    for i in range(len(grades)):
+        if i == len(grades)-1:
+            df_column = deepcopy(df_column_in_trace[df_column_in_trace["value"] >= thd_dict[grades[i]]])
         else:
-            title = "2861区县%s隐患-历史%s事件" % (event_type, grade)
-            subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
-        column_map_dict = get_column_map_dict(title, subtitle, df_column)
+            df_column = deepcopy(df_column_in_trace[(df_column_in_trace["value"] >= thd_dict[grades[i]])&(df_column_in_trace["value"]<thd_dict[grades[i+1]])])
+        df_column["column_color"] = color_dict[grades[i]]
+        df_column["rank"] = df_column["value"].rank(ascending=False)
+        # if record_now:
+        #     title = "2861区县%s隐患-%s预警中" % (event_type, grades[i])
+        #     subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+        # else:
+        #     title = "2861区县%s隐患-历史%s事件" % (event_type, grades[i])
+        #     subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
+        # column_map_dict = get_column_map_dict(title, subtitle, df_column)
+        column_map_dict = get_column_map_dict(df_column)
         warning_map_data_list.append(column_map_dict)
-        warning_map_data_name_list.append('warning_column_%s_map'%grade[0])
+        warning_map_data_name_list.append('warning_column_%s_map' % grades[i][0])
+
     return warning_map_data_list, warning_map_data_name_list
 
 
@@ -384,9 +408,9 @@ def get_warning_indexes_lines_data(df_warning_trace_info, events_head_ids, event
             y_name = index_names[index_cols.index(index_col)]
             linewidth = 3
             xfont = {"xfont":10, "fontWeight":"normal", "color":FT_PURE_WHITE}
-            # signname = ['A级', 'B级', 'C级']
-            # signlist = [df_event[index_col]]
-            index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont)
+            signname = ['A级', 'B级', 'C级']
+            signlist = [df_event[index_col]]
+            index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont, signname=signname, signlist=signlist)
             # index_line_dict = get_mixed_line_dict(title, subtitle, df_id, tips=tips)
             warning_line_data_list.append(index_line_dict)
             warning_line_data_name_list.append('%s_%s_index_trend' % (events_short_dict[events_head_id], index_col.split('_')[-1]))
@@ -483,7 +507,7 @@ def get_warning_bloggers_lines_data(df_warning_details, df_warning_trace_info, e
 
 
 # 预警相关的所有图
-def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now=True):
+def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now=True):
     # print(df_warning_trace_info)
     parameters = warning_dict[node_code]["parameters"]
     # 柱子地图（多张）
@@ -506,6 +530,7 @@ def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning
     gov_ids = []
     gov_names = []
     newly_weibo_values = []
+    events_links = []
     for events_head_id in events_head_ids:
         gov_id = df_warning_trace_info[df_warning_trace_info['events_head_id'] == events_head_id]['gov_id'].values[0]
         gov_name = df_2861_county[df_2861_county['gov_id'] == gov_id]['full_name'].values[0]
@@ -515,34 +540,40 @@ def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning
         gov_names.append(gov_name)
         newly_weibo_values.append(weibo_value)
 
+        # 给柱状图的牌子加上link
+        # gov_code = df_2861_county[df_2861_county.gov_id == gov_id].index.values[0]
+        gov_code_str = str(gov_code)[0:6]
+        events_links.append("%s/%s/setting_%s_value_indexes"%(node_code, gov_code_str, events_short_dict[events_head_id]))
+
     nearest_trace_time = max(df_warning_trace_info['do_time'].tolist())
     # 预警柱子分布图
-    warning_map_data, warning_map_data_names = get_warning_map_data(node_code, newly_weibo_values, gov_names, parameters, nearest_trace_time, record_now)
+    warning_map_data, warning_map_data_names = get_warning_map_data(node_code, newly_weibo_values, gov_names, events_links, parameters, nearest_trace_time, record_now)
     warning_map_data_list.extend(warning_map_data)
     warning_map_data_name_list.extend(warning_map_data_names)
 
-    # 事件走势图 —— 影响力指数、(速度、加速度（、总微博数、评论数、转发数）) —— 2018/8/2 只画影响力指数的图，速度/加速度不要了
-    warning_indexes_data, warning_indexes_names_list = get_warning_indexes_lines_data(df_warning_trace_info,
-                                                                                      events_head_ids, events_short_dict, gov_names,
-                                                                                      parameters,
-                                                                                      nearest_trace_time, record_now)
-    warning_line_data_list.extend(warning_indexes_data)
-    warning_line_data_name_list.extend(warning_indexes_names_list)
+    if str(gov_code)[0:6] == '110101':
+        # 事件走势图 —— 影响力指数、(速度、加速度（、总微博数、评论数、转发数）) —— 2018/8/2 只画影响力指数的图，速度/加速度不要了
+        warning_indexes_data, warning_indexes_names_list = get_warning_indexes_lines_data(df_warning_trace_info,
+                                                                                          events_head_ids, events_short_dict, gov_names,
+                                                                                          parameters,
+                                                                                          monitor_time, record_now)
+        warning_line_data_list.extend(warning_indexes_data)
+        warning_line_data_name_list.extend(warning_indexes_names_list)
 
-    # # 事件关键词 —— 官职、敏感词、部门，最多20个  —— 2018/8/2 不需要关键词的图了，转换成list_desc的文本形式
-    # warning_words_data, warning_words_names_list = get_warning_words_lines_data(df_warning_keywords, events_head_ids,events_short_dict,
-    #                                                                             gov_names, nearest_trace_time)
-    # warning_line_data_list.extend(warning_words_data)
-    # warning_line_data_name_list.extend(warning_words_names_list)
+        # # 事件关键词 —— 官职、敏感词、部门，最多20个  —— 2018/8/2 不需要关键词的图了，转换成list_desc的文本形式
+        # warning_words_data, warning_words_names_list = get_warning_words_lines_data(df_warning_keywords, events_head_ids,events_short_dict,
+        #                                                                             gov_names, nearest_trace_time)
+        # warning_line_data_list.extend(warning_words_data)
+        # warning_line_data_name_list.extend(warning_words_names_list)
 
-    # 博主影响力&事件参与度 —— 参与度最高的前二十个博主
-    para_dict = warning_dict[node_code]["parameters"]
-    warning_bloggers_data, warning_bloggers_names_list = get_warning_bloggers_lines_data(df_warning_details,
-                                                                                         df_warning_trace_info,
-                                                                                         events_head_ids,events_short_dict, gov_names,
-                                                                                         para_dict, nearest_trace_time, record_now)
-    warning_line_data_list.extend(warning_bloggers_data)
-    warning_line_data_name_list.extend(warning_bloggers_names_list)
+        # 博主影响力&事件参与度 —— 参与度最高的前二十个博主
+        para_dict = warning_dict[node_code]["parameters"]
+        warning_bloggers_data, warning_bloggers_names_list = get_warning_bloggers_lines_data(df_warning_details,
+                                                                                             df_warning_trace_info,
+                                                                                             events_head_ids,events_short_dict, gov_names,
+                                                                                             para_dict, monitor_time, record_now)
+        warning_line_data_list.extend(warning_bloggers_data)
+        warning_line_data_name_list.extend(warning_bloggers_names_list)
     # print(warning_map_data_name_list)
     # print(warning_map_data_name_list)
     # print(warning_line_data_name_list)
@@ -551,7 +582,7 @@ def get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning
 
 
 # 预警前端
-def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now=True):
+def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now=True):
     """
 
     :type node_code: object
@@ -615,64 +646,64 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     nearest_trace_time = str(max(df_warning_trace_info['do_time'].tolist())).split('.')[0]
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
 
-    # 生成一张本县的预警情况图
+    # 生成一张本县的预警情况图  —— 2018/8/20 本地的图不用了
 
-    current_time = time.strftime('%Y-%m-%d %H:%M:%S')
-    current_time_short = time.strftime('%m-%d %H:%M')
-    title = "本区县%s预警状况"%warning_type
-    subtitle = "更新时间：%s"%current_time
-    if (gov_name_current in gov_names) and record_now:
-        # ??? 有问题，一个区县多件事儿怎么办？
-        gov_index = gov_names.index(gov_name_current)
-        gov_value = newly_weibo_values[gov_index]
-        thd_grade = thd_grades[gov_index]
-        scope_grade = scope_grades[gov_index]
-        if thd_grade == " ":
-            thd_grade = 0
-            scope_grade = 0
-        elif thd_grade == "C级":
-            thd_grade = scope_grade = 3
-        elif thd_grade == "B级":
-            thd_grade = scope_grade = 2
-        elif thd_grade == "A级":
-            thd_grade = scope_grade = 1
-        df_id= pd.DataFrame({"value":[thd_grade], "name":gov_name_current, "rank":scope_grade})
-        if thd_grades[gov_index] == " ":
-            df_id['column_color'] = FT_SOBER_BLUE
+    # current_time = time.strftime('%Y-%m-%d %H:%M:%S')
+    monitor_time_short = datetime.strptime(monitor_time, '%Y-%m-%d %H:%M:%S').strftime('%m-%d %H:%M')
+    if 0:
+        title = "本区县%s预警状况"%warning_type
+        subtitle = "更新时间：%s"%monitor_time
+        if (gov_name_current in gov_names) and record_now:
+            # ??? 有问题，一个区县多件事儿怎么办？
+            gov_index = gov_names.index(gov_name_current)
+            gov_value = newly_weibo_values[gov_index]
+            thd_grade = thd_grades[gov_index]
+            scope_grade = scope_grades[gov_index]
+            if thd_grade == " ":
+                thd_grade = 0
+                scope_grade = 0
+            elif thd_grade == "C级":
+                thd_grade = scope_grade = 3
+            elif thd_grade == "B级":
+                thd_grade = scope_grade = 2
+            elif thd_grade == "A级":
+                thd_grade = scope_grade = 1
+            df_id= pd.DataFrame({"value":[thd_grade], "name":gov_name_current, "rank":scope_grade})
+            if thd_grades[gov_index] == " ":
+                df_id['column_color'] = FT_SOBER_BLUE
+            else:
+                df_id['column_color'] = color_dict[thd_grades[gov_index]]
+
         else:
-            df_id['column_color'] = color_dict[thd_grades[gov_index]]
+            df_id = pd.DataFrame({"value":[0], "name":gov_name_current,"rank":0})
+            df_id['column_color'] = BG_GREEN
 
-    else:
-        df_id = pd.DataFrame({"value":[0], "name":gov_name_current,"rank":0})
-        df_id['column_color'] = BG_GREEN
+        df_id['column_type'] = "a"
+        tips = {"value":"预警等级", "rank":"事件影响范围"}
+        column_map_local_dict = get_column_map_dict(title, subtitle, df_id, tips=tips, column_names=[gov_name_current])  # , column_names=False
+        warning_map_data_list.append(column_map_local_dict)
+        warning_map_data_name_list.append('warning_column_local_map')
 
-    df_id['column_type'] = "a"
-    tips = {"value":"预警等级", "rank":"事件影响范围"}
-    column_map_local_dict = get_column_map_dict(title, subtitle, df_id, tips=tips, column_names=[gov_name_current])  # , column_names=False
-    warning_map_data_list.append(column_map_local_dict)
-    warning_map_data_name_list.append('warning_column_local_map')
-
-    # settings
-    # column_map的setting， 2018/8/2 改为多个setting —— C/B/A/trace/base
-    # 进入时给本县当前的预警情况地图
-    setting = {}
-    setting["title"] = gov_name_current
-    data_dict = {}
-    data_dict["id"] = "local"
-    data_dict["node_code"] = node_code
-    data_dict["name"] = "本区县%s预警状况" % warning_type
-    data_dict["data"] = gov_code_str + '/' + 'warning_column_local_map'
-    setting["datas"] = [data_dict]
-    setting_list.append(setting)
-    setting_name_list.append('setting')
-
+        # settings
+        # column_map的setting， 2018/8/2 改为多个setting —— C/B/A/trace/base
+        # 进入时给本县当前的预警情况地图
+        setting = {}
+        setting["title"] = gov_name_current
+        data_dict = {}
+        data_dict["id"] = "local"
+        data_dict["node_code"] = node_code
+        data_dict["name"] = "本区县%s预警状况" % warning_type
+        data_dict["data"] = gov_code_str + '/' + 'warning_column_local_map'
+        setting["datas"] = [data_dict]
+        setting_list.append(setting)
+        setting_name_list.append('setting')
 
     # 追踪事件
     setting0 = {}
     data_dict = {}
     data_dict["id"] = "trace"
     data_dict["node_code"] = node_code
-    data_dict["data"] = '110101'+'/'+'warning_column_trace_map'
+    data_dict["data"] = gov_code_str+'/'+'warning_column_trace_map'
     setting0["datas"] = [data_dict]
     if record_now:
         data_dict["name"] = "2861区县%s隐患-追踪中" % warning_type
@@ -681,7 +712,9 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         data_dict["name"] = "2861区县%s隐患-历史追踪事件" % warning_type
         setting0["title"] = "历史追踪事件"
     setting_list.append(setting0)
-    setting_name_list.append('setting_trace')
+    # setting_name_list.append('setting_trace')
+    # 所有追踪的事件为首页
+    setting_name_list.append('setting')
 
     # C/B/A级预警分布
     for key in WSTATUSES.keys():
@@ -752,9 +785,21 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # 'setting_we0_sens_words'  —— 2018/8/2 不需要关键词的setting了
     # 'setting_we0_publishers'
 
+    # 共用的一块儿预警情况 —— columnMap上方
+    common_data = {}
+    common_data["title"] = "2861%s隐患监测系统"%warning_type
+    common_data["load_max"] = 2861
+    common_data["info_num"] = 0.2  # 先随便给个数，之后写从表里计算的函数
+    common_data["cur_area"] = gov_name_current
+    common_data["cur_date_time"] = monitor_time
+    common_data["remaining_time"] = 120  # 先写死，两个小时 —— 后期动态和李科讨论 2018/08/20
+    # if gov_name_current in gov_names:
+    common_data["event"] = gov_names.count(gov_name_current)
+    common_data["event_total"] = len(events_head_ids)
+    list_desc["column_title"] = common_data
 
-    # columnMap对应的list_desc
-    list_desc["local"] = {"title": "", "sub_title": "", "width":"35%"}
+    # columnMap对应的list_desc —— 去掉local对应的desc字段
+    # list_desc["local"] = {"title": "", "sub_title": "", "width":"35%"}
     list_desc_data1 = []
     # 第一行：标题
     gov_title = "<h3><section style='text-align:center'>%s</section></h3>" % gov_name_current
@@ -763,7 +808,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
     # 第二行：监测详情 —— 本县
     if (gov_name_current not in gov_names) or (not record_now):
-        detail = "<section style='text-align:center'>%s: 暂未监测到%s隐患</section>"%(current_time_short, warning_type)
+        detail = "<section style='text-align:center'>%s: 暂未监测到%s隐患</section>"%(monitor_time_short, warning_type)
         detail_text = {"text":"%s"%detail}
         monitor_line = {"cols": [{"text": "<span style='color: orange'>本区县监测详情：</span>"}, detail_text], "strong": True}
     else:
@@ -781,7 +826,6 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         monitor_line = {"cols": [{"text": "<span style='color: orange'>本区县监测详情：</span>"}, warn_grade, detail_text], "strong":True}
     list_desc_data1.append(monitor_line)
 
-
     # 隐患区县 —— 设计成 C/B/A/tracing/base 阶梯状按钮形式
     if record_now:
         detail = "<section style='text-align:center'>当前%s隐患如下：</section>"%(warning_type)
@@ -796,14 +840,14 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     B_warning_button = {"cols":[{"text":"2-省域性（B级）事件", "link":"#data:setting_B"}, {"text":""}]}
     A_warning_button = {"cols":[{"text":"1-区域性（A级）事件", "link":"#data:setting_A"}]}
     if record_now:
-        TRACE_warning_button = {"cols":[{"text":"0-正在追踪的事件", "link":"#data:setting_trace"}]}
+        TRACE_warning_button = {"cols":[{"text":"0-正在追踪的事件", "link":"#data:setting"}]}
     else:
-        TRACE_warning_button = {"cols": [{"text": "0-历史追踪事件", "link": "#data:setting_trace"}]}
+        TRACE_warning_button = {"cols": [{"text": "0-历史追踪事件", "link": "#data:setting"}]}
     BASE_warning_button = {"cols": [{"text":"运行中的基础预警数据", "link":"#list:%s/%s/base"%(node_code, gov_code_str)}]}
     list_desc_data1.extend([C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button, BASE_warning_button])
     null_line = {"cols": [{"text": ""}]}
 
-    list_desc["local"]["datas"] = list_desc_data1
+    # list_desc["local"]["datas"] = list_desc_data1
 
     # C/B/A/trace/base
     # base的desc
@@ -1201,11 +1245,11 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
             publish_info = {"cols":[{"text":row["post_name"]}, {"text":"%s"%row['event_participation']}, {"text":"%s"%row["publisher_impact"]}], "color":FT_SOBER_BLUE}
             list_desc_data4.append(publish_info)
         list_desc[index_id]["datas"] = list_desc_data4
-    return warning_map_data_list, warning_map_data_name_list, setting_list, setting_name_list, list_desc
+    return setting_list, setting_name_list, list_desc
 
 
 # 产生前端细节文件
-def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now=True):
+def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now=True):
     # 有问题？？？
     gov_code_str = str(gov_code)[0:6]
     target_dir_path = client_path + node_code + '/' + str(gov_code)[0:6] + '/'
@@ -1215,7 +1259,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
     # 地域分布
     if gov_code_str == '110101':
         # 得到基础数据
-        warning_map_data_list, warning_map_data_name_list, warning_line_data_list, warning_line_data_name_list = get_warning_map_line_basic_data(node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now)
+        warning_map_data_list, warning_map_data_name_list, warning_line_data_list, warning_line_data_name_list = get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now)
         if len(warning_line_data_list) > 0 and len(warning_map_data_list)>0:
             # print('map & columns')
             for set in range(len(warning_line_data_list)):
@@ -1223,21 +1267,35 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
             for position in range(len(warning_map_data_list)):
                 write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
 
-        # 得到本地预警图，setting和list文件
-        warning_map_data_list, warning_map_data_name_list, setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now)
+        # 得到setting和list文件
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now)
         if len(setting_list)>0:
-            for position in range(len(warning_map_data_list)):
-                write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
+            # for position in range(len(warning_map_data_list)):
+            #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
             for set in range(len(setting_list)):
                 write_client_datafile_json(target_dir_path, setting_name_list[set], '.json',setting_list[set])
             write_client_datafile_json(target_dir_path, 'list', '.json', list_desc)
 
     # 其他区县
     else:
-        warning_map_data_list, warning_map_data_name_list, setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, record_now)
-        if len(setting_list) > 0:
+        # 得到基础数据
+        warning_map_data_list, warning_map_data_name_list, warning_line_data_list, warning_line_data_name_list = get_warning_map_line_basic_data(
+            gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details,
+            df_warning_weibo_comments, monitor_time, record_now)
+        if len(warning_map_data_list) > 0:
+            # print('map & columns')
+            # for set in range(len(warning_line_data_list)):
+            #     write_client_datafile_json(target_dir_path, warning_line_data_name_list[set], '.json',
+            #                                warning_line_data_list[set])
             for position in range(len(warning_map_data_list)):
-                write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
+                write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',
+                                           warning_map_data_list[position])
+
+        # 得到setting和list文件
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now)
+        if len(setting_list) > 0:
+            # for position in range(len(warning_map_data_list)):
+            #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
             for set in range(len(setting_list)):
                 write_client_datafile_json(target_dir_path, setting_name_list[set], '.json',
                                                      setting_list[set])
@@ -1303,7 +1361,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         global df_warning_details
 
         events_type = warning_dict[node_code]["events_type"]
-        if 1:
+        if 0:
             df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type)
 
         # 调试环境数据
@@ -1324,6 +1382,15 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
             # 对象转为数字
             df_warning_details[["count_comment", "count_share"]] = df_warning_details[["count_comment", "count_share"]].apply(pd.to_numeric)
+
+        # 新版文件调试
+        if 1:
+            df_warning_trace_info = pd.read_csv('trace_info.csv', encoding='utf-8')
+            df_warning_keywords = pd.read_csv('keywords.csv', encoding='utf-8')
+            df_warning_details = pd.read_csv('details.csv', encoding='utf-8')
+            df_warning_weibo_comments = pd.read_csv('comments_test2.csv', encoding='utf-8')
+
+            events_num = len(set(list(df_warning_trace_info['events_head_id'])))
 
         print("GET EVENTS DATA DONE~")
 
@@ -1352,8 +1419,8 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
                     if gov_codes[i] not in df_2861_county.index.values:
                         continue
                     # if gov_code in df_2861_county.index.values:
-                    p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments))
-                    # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments)
+                    # p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time))
+                    generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time)
                     time_loop1 = time.time()
                     print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒'%((count*100/2852), (time_loop1-time_loop_start), (time_loop1-time_loop_start)*(2852-count)/count), end="")
                     
