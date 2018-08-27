@@ -13,18 +13,34 @@ import pandas as pd
 from copy import deepcopy
 import re
 import os
+import sys
+import logging
 # from OpnModule import match_warning_keywords_frontend
 import time
+from datetime import datetime
 import psycopg2
+import json
 from multiprocessing import Pool
+from apscheduler.schedulers.background import BlockingScheduler
 
 data_path = './data/'
+event_data_path = '../events_data/'
 gaode_geo_path = data_path + 'df_2861_gaode_geo.csv'
 
 # client_path = './apps/'
 
 df_2861_geo_county = pd.read_csv(gaode_geo_path, index_col='gov_code', encoding='utf-8')
 df_2861_county = df_2861_geo_county[df_2861_geo_county['gov_type'] > 2]
+
+logger = logging.getLogger('mylogger')
+formatter = logging.Formatter('%(asctime)s %(levelname)-8s:%(message)s')
+file_handler = logging.FileHandler(event_data_path + 'fetch_data_record.log')
+file_handler.setFormatter(formatter)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.formatter = formatter
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+logger.setLevel(logging.INFO)
 
 
 # 对Python自带的数据库的包
@@ -37,9 +53,17 @@ class DataBasePython:
 
     def select_data_from_db_one_by_one(self, db, sql):
         rows = []
-        conn = psycopg2.connect(dbname=db, user=self.user, password=self.pwd, host=self.host, port=self.port, client_encoding='utf-8')
-        cur = conn.cursor()
-        cur.execute(sql)
+        j = 10
+        while j >= 0:
+            try:
+                conn = psycopg2.connect(dbname=db, user=self.user, password=self.pwd, host=self.host, port=self.port, client_encoding='utf-8', keepalives=1, keepalives_idle=20, keepalives_interval=20, keepalives_count=3, connect_timeout=10)
+                cur = conn.cursor()
+                cur.execute(sql)
+                break
+            except Exception as e:
+                print(e)
+                j -= 1
+
         rowcount = cur.rowcount
         # row = 0
         for i in range(0, rowcount):
@@ -58,7 +82,7 @@ class DataBasePython:
 
     def execute_any_sql(self, db, sql):
         try:
-            conn = psycopg2.connect(dbname=db, user=self.user, host=self.host, password=self.pwd, port=self.port, client_encoding='utf-8')
+            conn = psycopg2.connect(dbname=db, user=self.user, host=self.host, password=self.pwd, port=self.port, client_encoding='utf-8', keepalives=1, keepalives_idle=20, keepalives_interval=20, keepalives_count=3, connect_timeout=10)
             cur = conn.cursor()
             cur.execute(sql)
             conn.commit()
@@ -195,10 +219,12 @@ trace_info_table = "public_sentiment_trace_info_table"
 trace_db_obj = DataBasePython(host=trace_db_info["host"], user=trace_db_info["user"],
                               pwd=trace_db_info["pwd"], port=trace_db_info["port"])
 
-warning_path = './data/warning_frontend/'
+# warning_path = './data/warning_frontend/'
 TRACE_LIMIT = 10
 COMMENTS_LIMIT = 100
 SHOW_COMMENTS_LIMIT = 6
+# max_key_words_num = 10
+history_events_limit = 10
 
 # 微博数、评论数、阅读数、转发数、基础评论长度的系数，用于舆情评估模型
 g_all_events = {
@@ -241,27 +267,76 @@ g_all_events = {
     }
 }
 
+warning_dict = {
+    "STABLE_WARNING": {
+        "events_model": "稳定",
+        "events_type": 1000,
+        "parameters": {
+            "K_weibo": 6, # 计算影响力value值的参数
+            "K_read": 1,
+            "K_comment": 3,
+            "K_share": 2,
+            "Size_comment": 5,
+            "Events_value_Thd": 500, # 影响力高于此值的事件才需要跟踪，产生trace seed
+            "Events_weibo_num_Thd": 3,  # 同一主题的微博数量大于门限的事件才需要跟踪，产生trace seed
+            "A_WARNING_Thd": 20000,  # 影响力高于此值的事件属于A级预警（区域事件）
+            "B_WARNING_Thd": 50000,  # 影响力高于此值的事件属于B级预警（省域事件）
+            "C_WARNING_Thd": 100000,  # 影响力高于此值的事件属于C级预警（全国事件）
+            "Events_trace_v_Thd": 720, # 当跟踪的平均速度>=720(val/小时)时，采样频率最高，T最短为T_base(默认20分钟)，
+                                    # 这样的话，当速度<=10(val/小时)时，trace_T就增加到24小时。
+                                    # 平均速度<=30(val/小时)时，trace_T就增加到8小时，可以跨过夜间无人更新微博的时间段。
+                                    # t=T_base/(1+(v-Events_trace_v_Thd)/Events_trace_v_Thd)，
+            "Events_trace_inactive_Thd": 3600 * 24,# 非实时跟踪事件的判断条件（跟踪周期为1天一次的为非实时跟踪）
+            "Events_trace_end_cnt_Thd": 5, # 停止跟踪的判断次数（连续5次速度小于门限）
+            "Events_trace_end_v_Thd": 10, # 停止跟踪的判断速度值，单位（影响力val/小时）
+        }
+    },
+    "ENV_POTENTIAL": {
+        "events_model": "环境",
+        "events_type": 2000,
+        "parameters": {
+            "K_weibo": 6,  # 计算影响力value值的参数
+            "K_read": 1,
+            "K_comment": 3,
+            "K_share": 2,
+            "Size_comment": 5,
+            "Events_value_Thd": 100,  # 影响力高于此值的事件才需要跟踪，产生trace seed
+            "Events_weibo_num_Thd": 2,  # 同一主题的微博数量大于门限的事件才需要跟踪，产生trace seed
+            "A_WARNING_Thd": 300,  # 影响力高于此值的事件属于A级预警（区域事件）
+            "B_WARNING_Thd": 800,  # 影响力高于此值的事件属于B级预警（省域事件）
+            "C_WARNING_Thd": 5000,  # 影响力高于此值的事件属于C级预警（全国事件）
+            "Events_trace_v_Thd": 720,  # 当跟踪的平均速度>=720(val/小时)时，采样频率最高，T最短为T_base(默认20分钟)，
+            # 这样的话，当速度<=10(val/小时)时，trace_T就增加到24小时。
+            # 平均速度<=30(val/小时)时，trace_T就增加到8小时，可以跨过夜间无人更新微博的时间段。
+            # t=T_base/(1+(v-Events_trace_v_Thd)/Events_trace_v_Thd)，
+            "Events_trace_inactive_Thd": 3600 * 24,  # 非实时跟踪事件的判断条件（跟踪周期为1天一次的为非实时跟踪）
+            "Events_trace_end_cnt_Thd": 5,  # 停止跟踪的判断次数（连续5次速度小于门限）
+            "Events_trace_end_v_Thd": 10,  # 停止跟踪的判断速度值，单位（影响力val/小时）
+        }
+    }
+}
+
+# NODE_CODES = ['STABLE_WARNING', 'ENV_POTENTIAL']
+
 
 # 找出当前正在跟踪的事件
-def get_running_trace_seed_list(events_type, record_now, update=True, limit=None):
+def get_running_trace_seed_list(events_type, record_now, limit=0):
+    # 2018/8/23 注掉， 应该没问题
+    # sql = "select a.events_head_id, a.gov_id, a.gov_name, a.key_word_str, a.start_date, a.sync_time from %s a, " \
+    #       "(select events_head_id, max(sync_time) as sync_time from %s where trace_state=%d and events_type=%d" \
+    #       "group by events_head_id) b where a.sync_time = b.sync_time and a.events_head_id = b.events_head_id order by start_date desc;"%\
+    #       (trace_seed_table, trace_seed_table, trace_state, events_type)
+    # 2018/8/23 沁哥改了代码，当前追踪中的事件从seed里拿出search_cnt，用这个实时更新的search_cnt去detail表取数据【历史数据不用取search_cnt——为null】
     if record_now:
         trace_state = 2
-    # 历史数据
+        sql = "select events_head_id, gov_id, gov_name, key_word_str, start_date, sync_time, search_cnt from %s where trace_state=%d and events_type=%d order by start_date desc"%(trace_seed_table, trace_state, events_type)
+
     else:
         trace_state = 4
+        sql = "select events_head_id, gov_id, gov_name, key_word_str, start_date, sync_time from %s where trace_state=%d and events_type=%d order by start_date desc"%(trace_seed_table, trace_state, events_type)
 
-    sql = "select a.events_head_id, a.gov_id, a.gov_name, a.key_word_str, a.start_date, a.sync_time from %s a, " \
-          "(select events_head_id, max(sync_time) as sync_time from %s where trace_state=%d and events_type=%d" \
-          "group by events_head_id) b where a.sync_time = b.sync_time and a.events_head_id = b.events_head_id order by start_date desc;"%\
-          (trace_seed_table, trace_seed_table, trace_state, events_type)
-
-    # 2018-08-07更新之后简化SQL
-    if update:
-        if limit is None:
-            sql = "select events_head_id, gov_id, gov_name, key_word_str, start_date, sync_time from %s where trace_state=%d and events_type=%d order by start_date desc;"%(trace_seed_table, trace_state, events_type)
-
-        else:
-            sql = "select events_head_id, gov_id, gov_name, key_word_str, start_date, sync_time from %s where trace_state=%d and events_type=%d order by start_date desc limit %d;"%(trace_seed_table, trace_state, events_type, limit)
+    if limit > 0:
+        sql = sql + " limit %d"%limit
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sql)
     return rows
 
@@ -379,14 +454,14 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     seed_time = time.time()
     print("Get running seeds done: %s" % (seed_time - start_time), flush=True)
 
-    df_basic_events = pd.DataFrame(running_seed_list, columns=['events_head_id', 'gov_id', 'gov_name', 'key_word_str', 'start_time', 'sync_time'])
-    # # 同一区县发生两件事/同一件事重复，取sync_time最近的那条留下。 // 前端调好了再来优化这个算法，加上对事件关键词的判断
-    # gov_ids_origin = list(df_basic_events['gov_id'])
-    # for gov_id in gov_ids_origin:
-    #     if gov_ids_origin.count(gov_id) <= 1:
-    #         continue
-    #     df_basic_events.drop(df_basic_events.index[(df_basic_events['gov_id'] == gov_id) & (df_basic_events.sync_time != df_basic_events[df_basic_events['gov_id'] == gov_id]['sync_time'].max())], inplace=True)
-    # df_basic_events.reset_index(drop=True, inplace=True)
+    # 2018/8/23 seed表追踪事件和历史事件取法不一
+    if record_now:
+        df_basic_events = pd.DataFrame(running_seed_list, columns=['events_head_id', 'gov_id', 'gov_name', 'key_word_str', 'start_time', 'sync_time', 'search_cnt'])
+        # 清洗search_cnt为nan的情况
+        # if record_now:
+        df_basic_events.drop(df_basic_events.index[df_basic_events['search_cnt'] != df_basic_events['search_cnt']],inplace=True)
+    else:
+        df_basic_events = pd.DataFrame(running_seed_list, columns=['events_head_id', 'gov_id', 'gov_name', 'key_word_str', 'start_time', 'sync_time'])
 
     # 对历史事件的events_head_id去重 —— 历史事件的events_head_id有重复啊怒！！！-2018/8/17  --当前事件也要去重。。。尼玛。。2018/8/20
     # if not record_now:
@@ -401,7 +476,6 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
 
     df_basic_events.reset_index(drop=True, inplace=True)
 
-
     # 删掉高新区的数据 —— 暂时没法上前端
     events_gov_ids = df_basic_events['gov_id'].tolist()
     events_gov_ids_exact = [i if i in df_2861_county['gov_id'].tolist() else 0 for i in events_gov_ids]
@@ -410,6 +484,7 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     #     continue
 
     df_basic_events.drop(df_basic_events.index[df_basic_events['gov_id'] != events_gov_ids_exact], inplace=True)
+
 
     for col in list(df_basic_events):
         globals()[col+'s'] = list(df_basic_events[col])
@@ -450,11 +525,34 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
 
     # 2018/08/07 优化代码，SQL语句等
     max_comment_dataids = []
+    events_head_ids_new = []
+    gov_ids_new = []
+    gov_names_new = []
+    key_word_strs_new = []
+    start_times_new = []
     for events_head_id in events_head_ids:
-        gov_id = gov_ids[events_head_ids.index(events_head_id)]
+        event_index = events_head_ids.index(events_head_id)
+        gov_id = gov_ids[event_index]
         trace_info = get_events_trace_info(events_head_id, gov_id=gov_id)
-        search_cnt = max([i[-1] for i in trace_info])
+
+        # # 需要判断一个事件的追踪周期是否有重复，有的话这个事件就暂时不要
+        # one_event_trace_scnts = [i[-1] for i in trace_info]
+        if record_now:
+            search_cnt = search_cnts[events_head_ids.index(events_head_id)]
+        else:
+            search_cnt = max([i[-1] for i in trace_info])
         weibo_details = get_events_detail_weibo(events_head_id, with_comments=False, search_cnt=search_cnt, gov_id=gov_id)
+        if len(weibo_details) == 0:
+            continue
+        #     max_comment_dataid = "0"
+        # else:
+        events_head_ids_new.append(events_head_id)
+        gov_ids_new.append(gov_id)
+        gov_names_new.append(gov_names[event_index])
+        key_word_strs_new.append(key_word_strs[event_index])
+        start_times_new.append(start_times[event_index])
+        # sync_times_new.append(sync_times[event_index])
+
         max_comment_dataid = weibo_details[0][2]
         max_comment_dataids.append(max_comment_dataid)
         weibo_details_all.extend(weibo_details)
@@ -466,6 +564,8 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     # 微博详情
     if len(weibo_details_all) != 0:
         df_warning_details = pd.DataFrame(weibo_details_all, columns=weibo_details_columns)
+        for i in ['pub_time', 'do_time', 'last_comment_time']:
+            df_warning_details[i] = df_warning_details[i].dt.strftime('%Y-%m-%d %H:%M:%S')
         df_warning_details = df_warning_details.astype('object')
         # df_warning_details = df_warning_details.astype('object')
         # df_warning_details['comments'] = df_warning_details['comments'].apply(lambda x: deal_with_comments(x))
@@ -476,19 +576,10 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         # data_ids = []
         # weibo_contents = []
         comments = []
-        for events_head_id in events_head_ids:
-            # df_event = df_warning_details[df_warning_details['events_head_id']==events_head_id]
-            # data_id = df_event[df_event['count_comment']==df_event['count_comment'].max()]['data_id'].values[0]
-            # weibo_content = df_event[df_event['count_comment']==df_event['count_comment'].max()]['content'].values[0]
-            # data_ids.append(data_id)
-            print("\r%d/%d:%s"%(events_head_ids.index(events_head_id), len(events_head_ids), events_head_id), end='', flush=True)
+        for events_head_id in events_head_ids_new:
+            print("\r%d/%d:%s"%(events_head_ids_new.index(events_head_id), len(events_head_ids_new), events_head_id), end='', flush=True)
 
-            # # 调试
-            # if 1:
-            #     if events_head_id != 'e984d389fd4121977d90980ee8f1a870':
-            #         continue
-
-            data_id_max = max_comment_dataids[events_head_ids.index(events_head_id)]
+            data_id_max = max_comment_dataids[events_head_ids_new.index(events_head_id)]
             data_ids_chosen = df_warning_details[df_warning_details['events_head_id']==events_head_id][['count_comment','data_id']].sort_values(by=['count_comment'], ascending=False)["data_id"].tolist()
             merge_comments = []
             j = 0
@@ -529,7 +620,7 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         get_comments_time = time.time()
         print("Get 100 comments : %s" % (get_comments_time - trace_detail_time), flush=True)
 
-        df_warning_weibo_comments = pd.DataFrame({"events_head_id":events_head_ids, "data_id":max_comment_dataids, "comments":comments})   # "content":weibo_contents, —— 去掉content
+        df_warning_weibo_comments = pd.DataFrame({"events_head_id":events_head_ids_new, "data_id":max_comment_dataids, "comments":comments})   # "content":weibo_contents, —— 去掉content
 
         df_warning_weibo_comments = df_warning_weibo_comments.astype('object')
 
@@ -543,10 +634,6 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         print("Get typical comments: %s" % (typical_comments_time - get_comments_time), flush=True)
 
         # 再提取前端需要的典型评论条数 进行清洗
-        # 直接提量清洗
-        if 0:
-            df_warning_weibo_comments['comments_shown'] = df_warning_weibo_comments['comments_typical'].apply(lambda x: deal_with_comments(x[0:SHOW_COMMENTS_LIMIT]))
-            # df_warning_weibo_comments.to_csv('comments_test1.csv', encoding='utf-8-sig')
             
         # 先提量， 再清洗
         if 1:
@@ -570,8 +657,8 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         
         # 事件关键词
         key_words_all_events = []
-        for event_head_id in events_head_ids:
-            position = events_head_ids.index(event_head_id)
+        for event_head_id in events_head_ids_new:
+            position = events_head_ids_new.index(event_head_id)
             series_event = df_warning_details[df_warning_details["events_head_id"] == event_head_id]["content"]
             series_comments = df_warning_weibo_comments[df_warning_weibo_comments["events_head_id"] == event_head_id]["comments_typical"].apply(lambda x:''.join(x))
             content_merge = ''.join(series_event)
@@ -583,16 +670,17 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
                     continue
                 for key_word in key_words_list:
                     key_word["events_head_id"] = event_head_id
-                    key_word["gov_id"] = gov_ids[position]
-                    key_word["gov_name"] = gov_names[position]
-                    key_word["key_word_str"] = key_word_strs[position]
-                    key_word["start_time"] = start_times[position]
+                    key_word["gov_id"] = gov_ids_new[position]
+                    key_word["gov_name"] = gov_names_new[position]
+                    key_word["key_word_str"] = key_word_strs_new[position]
+                    key_word["start_time"] = start_times_new[position]
                 key_words_all_events.extend(key_words_list)
         get_keywords_time = time.time()
         print("Get keywords: %s" % (get_keywords_time - deal_comments_time), flush=True)
 
         if len(key_words_all_events) != 0:
             df_warning_key_words = pd.DataFrame(key_words_all_events)
+            df_warning_key_words['start_time'] = df_warning_key_words['start_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
             # df_warning_key_words.to_csv('keywords.csv', encoding='utf-8-sig')
         else:
             df_warning_key_words = pd.DataFrame()
@@ -608,6 +696,7 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     # 数据信息
     if len(values_for_pic) != 0:
         df_warning_trace_info = pd.DataFrame(values_for_pic, columns=values_columns)
+        df_warning_trace_info['do_time'] = df_warning_trace_info['do_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         df_warning_trace_info['weibo_value'] = K_weibo*df_warning_trace_info['data_num'] + \
                                                K_comment*df_warning_trace_info['count_comment'] + \
                                                K_read*df_warning_trace_info['count_read'] + \
@@ -619,8 +708,64 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     else:
         df_warning_trace_info = pd.DataFrame()
 
-    return df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, len(events_head_ids)
 
+
+    return df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, len(events_head_ids_new)
+
+
+# 定时生成数据文件
+sched = BlockingScheduler()
+
+
+# @sched.scheduled_job('cron', hour='5-23', minute='*/15')
+@sched.scheduled_job('cron', hour='6-23', minute='50')
+def fetch_events_data_regularly():
+    for node_code in warning_dict.keys():
+        record_now = True
+        # 先不管稳定
+        if 0:
+            if node_code == "STABLE_WARNING":
+                continue
+        monitor_datetime = datetime.now()
+        monitor_time = datetime.strftime(monitor_datetime, '%Y-%m-%d-%H-%M-%S')
+        record_time = datetime.strftime(monitor_datetime, '%Y-%m-%d %H:%M:%S')
+        # time_dir = '-'.join('-'.join(monitor_time.split(' ')).split())
+        events_type = warning_dict[node_code]["events_type"]
+        df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type)
+        if events_num <= 0:
+            record_now = False
+            df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type, record_now=record_now, events_limit=history_events_limit)
+
+        # 事件信息储存
+        events_node_dir = event_data_path + node_code + '/'
+        events_data_dir = events_node_dir + monitor_time + '/'
+        if not os.path.exists(events_data_dir):
+            os.makedirs(events_data_dir)
+        df_warning_trace_info.to_csv(events_data_dir+'trace_info.csv', encoding='utf-8-sig')
+        df_warning_key_words.to_csv(events_data_dir+'keywords.csv', encoding='utf-8-sig')
+        df_warning_details.to_csv(events_data_dir+'details.csv', encoding='utf-8-sig')
+        df_warning_weibo_comments.to_csv(events_data_dir+'comments.csv', encoding='utf-8-sig')
+
+        # 转为dict / json 存取
+        trace_dict = df_warning_trace_info.to_dict()
+        keywords_dict = df_warning_key_words.to_dict()
+        details_dict = df_warning_details.to_dict()
+        comments_dict = df_warning_weibo_comments.to_dict()
+
+        # 写入json文件
+        json.dump(trace_dict, open(events_data_dir+'trace_info.json', 'w'))
+        json.dump(keywords_dict, open(events_data_dir+'keywords.json','w'))
+        json.dump(details_dict, open(events_data_dir+'details.json', 'w'))
+        json.dump(comments_dict, open(events_data_dir+'comments.json', 'w'))
+
+        with open(events_node_dir+'version.txt', 'a', encoding='utf-8-sig') as fp:
+            fp.write(monitor_time+'\n')
+        fp.close()
+
+        # 记录拿数据的信息和时间
+        logger.info('-->events:%s-->monitor_time:%s-->record_now:%s-->events_num:%d-->time_taken:%.3f minutes'%(node_code, monitor_time, record_now, events_num, (datetime.now()-monitor_datetime).seconds/60))
+
+    return
 
 if __name__ == "__main__":
     version_date = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -637,6 +782,20 @@ if __name__ == "__main__":
         current_time = time.strftime('%Y-%m-%d %H:%M:%S')
         events_type = 1000
         get_events_data(current_time, events_type)
+
+    # 测试定时跑
+    if 0:
+        sched.start()
+
+    # 测试
+    if 1:
+        fetch_events_data_regularly()
+
+    if 0:
+        # version_date =
+        events_type = 2000
+        get_events_data(version_date, events_type, record_now=False, events_limit=None)
+
 
     pass
 

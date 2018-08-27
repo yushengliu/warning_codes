@@ -20,11 +20,12 @@ import numpy as np
 from copy import deepcopy
 from apscheduler.schedulers.background import BlockingScheduler
 from multiprocessing import Pool
-
-# 自定义模块
 import time
 from datetime import datetime, timedelta
-from xmd_events_warning_data_generation import get_events_data, trace_db_obj, trace_info_table, trace_db_info
+
+# 自定义模块
+from db_interface import database
+from xmd_events_warning_data_generation import get_events_data, trace_db_obj, trace_info_table, trace_db_info, trace_seed_table
 
 warning_dict = {
     "STABLE_WARNING": {
@@ -80,6 +81,7 @@ sesi_words_path = data_path + 'sensitive_word_userdict.txt'
 gaode_geo_path = data_path + 'df_2861_gaode_geo.csv'
 
 client_path = '../apps/'
+event_data_path = '../events_data/'
 
 df_2861_geo_county = pd.read_csv(gaode_geo_path, index_col='gov_code', encoding='utf-8')
 df_2861_county = df_2861_geo_county[df_2861_geo_county['gov_type'] > 2]
@@ -122,12 +124,13 @@ WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较�
 
 max_key_words_num = 10
 history_events_limit = 10
-interhour = 2
+interhour = 1
 common_folder_code = '110101'
 
 df_warning_trace_info = pd.DataFrame()
 df_warning_keywords = pd.DataFrame()
 df_warning_details = pd.DataFrame()
+df_warning_weibo_comments = pd.DataFrame()
 
 # 'we0_value_index_trend'
 # 'we0_sens_word_trend'
@@ -135,6 +138,12 @@ df_warning_details = pd.DataFrame()
 
 # 服务器信息
 source_dict = {"ip":"120.78.222.247", "port":22, "uname":"root", "password":"zhikuspider"}
+
+# 云端数据库
+product_server = database.get_database_server_by_nick(database.SERVER_PRODUCT)
+product_db = 'product'
+stats_table = 'xmd_weibo_stats'
+stable_past_table = 'xmd_stable_past_events'
 
 
 
@@ -158,14 +167,6 @@ def write_client_datafile_json(target_dir_path, file_name, postfix, ret_content)
         json.dump(ret_content, outfile, cls=MyEncoder)
     return
 
-
-# 计算两个更新周期之间的事件信息新增条数
-def events_update_info_num_between(monitor_date_time):
-    last_time = monitor_date_time - timedelta(hours=interhour)
-    sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num+count_read+count_comment+count_share)-MIN(data_num+count_read+count_comment+count_share) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;"%(trace_info_table, last_time, monitor_date_time)
-
-    rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
-    return rows[0][0]
 
 # 隐患接口：画有柱子的地图 —— 改一下， title和subtitle默认不给
 def get_column_map_dict( df_id, title=None, subtitle=None, tips=None, column_names=None):
@@ -662,8 +663,33 @@ def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, 
     return warning_map_data_list, warning_map_data_name_list, warning_line_data_list, warning_line_data_name_list
 
 
+# 过往事件list描述
+def get_past_events_desc_per_gov(gov_code, df_past):
+    gov_code_str = str(gov_code)[0:6]
+    gov_name = df_2861_county.loc[gov_code, 'full_name']
+    df_gov_past = deepcopy(df_past[df_past['gov_code'] == int(gov_code_str)])
+    df_gov_past = df_gov_past.reset_index(drop=True)
+    if df_gov_past.iloc[:,0].size == 0:
+        desc = "<p><span style='color: #ff1133;font-weight: bold'>暂未监测到跟本地有关的热门话题！</span></p>"
+    else:
+        desc = ""
+        for i in df_gov_past.index.values:
+            desc += "<p><span style='color: #ffcc00;'>%d，[主题]%s</span>" \
+                    "<br/>时间：%s" \
+                    "<br/><span style='color: #ffcc00;'>涉及职务：</span>%s" \
+                    "<br/><span style='color: #ffcc00;'>涉及部门：</span>%s" \
+                    "<br/><span style='color: #ffcc00;'>涉及关键词：</span>%s</p>"\
+                    %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'],df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
+
+
+    datas = ""
+    title = "<h1>%s</h1>" % (gov_name)
+    datas += title
+    datas += desc
+    return datas
+
 # 预警前端
-def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now=True):
+def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now=True):
     """
 
     :type node_code: object
@@ -885,11 +911,25 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     common_data["remaining_time"] = time.mktime(next_time.timetuple())
 
     # 计算两个更新周期之间的新增事件信息条数
-    common_data["info_num"] = str(events_update_info_num_between(this_time))
+    # common_data["info_num"] = str(events_update_info_num_between(this_time))
+    common_data["info_num"] = "%d"%info_dict["monitor_aug"]
+    common_data["check_state"] = warning_type
     # if gov_name_current in gov_names:
     common_data["event"] = str(gov_names.count(gov_name_current))
     common_data["event_total"] = str(len(events_head_ids))
+    # if "past_events" in info_dict.keys():
+    if node_code == "STABLE_WARNING":
+        common_data["history_link"] = node_code + '/' + gov_code_str + '/past'
     list_desc["column_title"] = common_data
+
+    # if "past_events" in info_dict.keys():
+    if node_code == "STABLE_WARNING":
+        past_dict = info_dict["past_events"]
+        df_past = pd.DataFrame(past_dict)
+        desc_past = get_past_events_desc_per_gov(gov_code, df_past)
+        back_info = {"cols": [{"text": "返回", "link": "#list:%s/%s/trace"%(node_code, gov_code_str)}], "bg_color": BT_TIFFANY_BLUE,"color": FT_PURE_WHITE, "strong": True}
+        past_info = {"cols": [{"text": "%s"%desc_past}]}
+        list_desc["past"] = {"title":"", "sub_title":"", "width":"35%", "datas":[back_info,past_info]}
 
     # columnMap对应的list_desc —— 去掉local对应的desc字段
     # list_desc["local"] = {"title": "", "sub_title": "", "width":"35%"}
@@ -944,16 +984,17 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     null_line = {"cols": [{"text": ""}]}
     country_line2 = {"cols": [{"text": "正在被跟踪的区县：<span style='color:orange'>2861</span>个"}]}
     country_line3 = {"cols": [{"text": "正在跟踪的事件：<span style='color:orange'>%d</span>件" % len(events_head_ids)}]}
+    country_line3_5 = {"cols": [{"text": "追踪采样频率：约每<span style='color:orange'>10~20分钟</span>采一次"}]}
     country_line4 = {"cols": [{"text": "跟踪爬虫：<span style='color:orange'>7*24</span>小时不间断运行"}]}
 
     # 过去一周的新增信息 —— 统计在本地库，所以需要每周/月在本地统计，通过文件定期更新至服务器的方式，让前端每次读文件更新。 2018/8/22
     country_line5 = {"cols": [{"text": "过去一周："}]}
-    country_line6 = {"cols": [{"text": "追踪事件数：<span style='color:orange'>%d</span>件" % 200}]}
-    country_line7 = {"cols": [{"text": "追踪采样周期：共计<span style='color:orange'>%d</span>次" % 200}]}
-    country_line8 = {"cols": [{"text": "系统新增互联网信息：<span style='color:orange'>%d</span>条" % 300}]}
-    country_line9 = {"cols": [{"text": "(包括新增微博等信息<span style='color:orange'>%d</span>条，新增评论、转发<span style='color:orange'>%d</span>条等）" % (100, 200)}]}
+    country_line6 = {"cols": [{"text": "追踪事件数：<span style='color:orange'>%d</span>件" % info_dict["past_week"]["events_num"]}]}
+    country_line7 = {"cols": [{"text": "新增事件相关信息：<span style='color:orange'>%d</span>万条" % info_dict["past_week"]["events_info"]}]}
+    country_line8 = {"cols": [{"text": "系统新增互联网信息：<span style='color:orange'>%d</span>万条" % info_dict["past_week"]["sys_info"]}]}
+    # country_line9 = {"cols": [{"text": "(包括新增微博等信息<span style='color:orange'>%d</span>条，新增评论、转发<span style='color:orange'>%d</span>条等）" % (100, 200)}]}
     list_desc_data1.extend([C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button, BASE_warning_data])
-    list_desc_data1.extend([null_line, country_line2, country_line3, country_line4, country_line5, country_line6, country_line7, country_line8, country_line9])
+    list_desc_data1.extend([null_line, country_line2, country_line3, country_line3_5, country_line4, country_line5, country_line6, country_line7, country_line8])
 
 
     # list_desc["local"]["datas"] = list_desc_data1
@@ -1287,7 +1328,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                     list_desc_data3 = [gov_info, warn_title_info, warn_info, null_line]
                     other_status_index = thd_desc.index(status)
                     tri_buttons_list_other = deepcopy(tri_buttons_list)
-                    tri_buttons_list_other[other_status_index]["cols"][0]["link"] = "#data:setting_%s_%s_indexes"%(events_short_dict[events_head_id], index_col.split('_')[-1])
+                    tri_buttons_list_other[other_status_index]["cols"][0]["link"] = "#list:%s/%s/%svalue"%(node_code, gov_code_str, events_short_dict[events_head_id])
                     tri_buttons_list_other[other_status_index]["strong"] = True
                     # tri_buttons_list_other[other_status_index]["color"] = color_dict[status]
                     tri_buttons_list_other[other_status_index]["cols"][0]["text"] = "<span style='color: %s'>" % (
@@ -1351,13 +1392,16 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
             # weibo_title = {"cols":[{"text":"<h3><section style='text-align:center'>事件相关微博</section></h3>"}], "strong":True, "color":FT_ORANGE}
             weibo_title = {"cols": [{"text": "部分事件信息"}],"strong": True, "color": FT_ORANGE}
-            lenth = len(df_event["content"][0])
-            if lenth <= 80:
-                k = lenth
-            else:
-                k = 80
-            weibo_content = {"cols":[{"text":"%s：%s"%(df_event['pub_time'][0], df_event["content"][0][0:k]+'...')}]}
-            list_desc_data4.extend([weibo_title, weibo_content])
+            for i in df_event.index:
+                lenth = len(df_event.loc[i, "content"])
+                if len(df_event.loc[i, 'content']) >= 10:
+                    if lenth <= 80:
+                        k = lenth
+                    else:
+                        k = 80
+                    weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...')}]}
+                    list_desc_data4.extend([weibo_title, weibo_content])
+                    break
 
             # 评论信息
             df_comments = df_warning_weibo_comments.loc[(df_warning_weibo_comments.events_head_id == events_head_id), :]
@@ -1393,7 +1437,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
 
 # 产生前端细节文件
-def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now=True):
+def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now=True):
     # 有问题？？？
     gov_code_str = str(gov_code)[0:6]
     target_dir_path = client_path + node_code + '/' + str(gov_code)[0:6] + '/'
@@ -1412,7 +1456,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
                 write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
 
         # 得到setting和list文件
-        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now)
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
         if len(setting_list)>0:
             # for position in range(len(warning_map_data_list)):
             #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
@@ -1436,7 +1480,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
                                            warning_map_data_list[position])
 
         # 得到setting和list文件
-        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, record_now)
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
         if len(setting_list) > 0:
             # for position in range(len(warning_map_data_list)):
             #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
@@ -1473,6 +1517,98 @@ def run_command(sshclient, the_cmd):
     return retcode, outdata, errordata
 
 
+# 拿最新的事件
+def get_newliest_events_data(node_code):
+    events_node_dir = event_data_path + node_code + '/'
+    version_file = events_node_dir + 'version.txt'
+    newest_date = open(version_file, 'r', encoding='utf-8').readlines()[-1].strip()
+    events_data_path = events_node_dir + newest_date + '/'
+    df_warning_trace_info = pd.DataFrame(json.load(open(events_data_path+'trace_info.json', 'r')))
+    df_warning_keywords = pd.DataFrame(json.load(open(events_data_path+'keywords.json', 'r')))
+    df_warning_details = pd.DataFrame(json.load(open(events_data_path+'details.json', 'r')))
+    df_warning_weibo_comments = pd.DataFrame(json.load(open(events_data_path+'comments.json', 'r')))
+
+    record_now = True
+    events_num = 0
+
+    log_infos = open(event_data_path+'fetch_data_record.log', 'r', encoding='utf-8').readlines()
+
+    for record_log in log_infos:
+        if (node_code in record_log) and (newest_date in record_log):
+            infos_list = record_log.strip().split('-->')
+            for i in infos_list:
+                if 'record_now' in i :
+                    record_now_str = i.split('record_now:')[-1].strip()
+                    record_now = True if record_now_str == 'True' else False
+                if 'events_num' in i :
+                    events_num = int(i.split('events_num:')[-1].strip())
+            break
+
+    return df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now
+
+
+# 计算两个更新周期之间的事件信息新增条数
+def events_update_info_num_between(monitor_datetime):
+    last_time = monitor_datetime - timedelta(hours=interhour)
+    sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num+count_read+count_comment+count_share)-MIN(data_num+count_read+count_comment+count_share) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;"%(trace_info_table, last_time, monitor_datetime)
+
+    rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+    return rows[0][0]
+
+
+# 计算近一周追踪事件数
+def get_past_week_trace_events_num(monitor_datetime):
+    last_time = monitor_datetime - timedelta(days=7)
+    sqlstr = "SELECT count(events_head_id) from %s where sync_time between '%s' and '%s'"%(trace_seed_table, last_time, monitor_datetime)
+
+    rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+    # print(rows[0][0])
+    return rows[0][0]
+
+
+# 计算近一周追踪事件信息条数
+def get_past_week_trace_info_num(monitor_datetime):
+    last_time = monitor_datetime - timedelta(days=7)
+    sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num+count_comment)-MIN(data_num+count_comment) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;" % (
+    trace_info_table, last_time, monitor_datetime)
+
+    rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+    # print(rows[0][0])
+    return rows[0][0]
+
+
+# 计算近一周系统入库信息条数
+def get_past_week_sys_info_num(monitor_datetime):
+    latest_time = (monitor_datetime - timedelta(days=2)).date()
+    last_time = (monitor_datetime - timedelta(days=9)).date()
+    sqlstr = "SELECT SUM(daily_weibo+daily_comment) as sum from %s where pub_date >= '%s' and  pub_date <= '%s'"%(stats_table, last_time, latest_time)
+    conn = database.ConnDB(product_server, product_db)
+    conn.switch_to_arithmetic_write_mode()
+    ret = conn.read(sqlstr)
+    # print(ret.code)
+    rows = ret.data
+    # print(ret.result)
+    # print(rows)
+    # print(rows[0]['sum'])
+    return rows[0]['sum']
+
+
+# 从云端数据库取历史事件信息
+def get_past_events_info(time_start, time_end):
+    sqlstr = "select * from %s where event_time_start between '%s' and '%s'"%(stable_past_table, time_start, time_end)
+    conn = database.ConnDB(product_server, product_db)
+    conn.switch_to_arithmetic_write_mode()
+    ret = conn.read(sqlstr)
+    if not ret.code:
+        print("取历史事件错误原因：", ret.result)
+    rows = ret.data
+    # print(rows)
+    return rows
+
+
+
+
+
 # 单独生成最后一级的详细解读
 def web_leaves_datafile(provinces, monitor_time, same_provs):
     '''
@@ -1481,7 +1617,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
     :return:
     '''
     # 遍历指定省
-    count = 0
+
     time_loop_start = time.time()
 
     # ok_file = './OK.txt'
@@ -1490,9 +1626,28 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
     time_dir = '-'.join('-'.join(monitor_time.split(' ')).split(':'))
 
-    for node_code in warning_dict.keys():
+    info_dict = {}
+    info_dict["past_week"] = {}
+    this_time = datetime.strptime(monitor_time, '%Y-%m-%d %H:%M:%S')
+    # next_time = this_time + timedelta(hours=interhour)
+    info_dict["monitor_aug"] = events_update_info_num_between(this_time)
+    info_dict["past_week"]["events_num"] = get_past_week_trace_events_num(this_time)
+    info_dict["past_week"]["events_info"] = get_past_week_trace_info_num(this_time)/10000
+    info_dict["past_week"]["sys_info"] = get_past_week_sys_info_num(this_time)/1000
 
-        if 1:
+
+    for node_code in warning_dict.keys():
+        node_begin_datetime = datetime.now()
+        count = 0
+        # 取历史数据
+        if node_code == "STABLE_WARNING":
+            time_start = datetime(2018,1,1)
+            time_end = this_time
+            rows = get_past_events_info(time_start, time_end)
+            df_temp = pd.DataFrame(rows)
+            info_dict["past_events"] = df_temp.to_dict()
+
+        if 0:
             # 先不管环境
             if node_code == "ENV_POTENTIAL":
                 continue
@@ -1501,9 +1656,11 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
             if node_code == "STABLE_WARNING":
                 continue
 
+
         global df_warning_trace_info
         global df_warning_keywords
         global df_warning_details
+        global df_warning_weibo_comments
 
         events_type = warning_dict[node_code]["events_type"]
         if 0:
@@ -1529,7 +1686,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
             df_warning_details[["count_comment", "count_share"]] = df_warning_details[["count_comment", "count_share"]].apply(pd.to_numeric)
 
         # 新版文件调试
-        if 1:
+        if 0:
             df_warning_trace_info = pd.read_csv('../trace_info.csv', encoding='utf-8')
             df_warning_keywords = pd.read_csv('../keywords.csv', encoding='utf-8')
             df_warning_details = pd.read_csv('../details.csv', encoding='utf-8')
@@ -1537,91 +1694,91 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
             events_num = len(set(list(df_warning_trace_info['events_head_id'])))
 
+        # 2018/8/24 —— 更改了拿数据的方式，load json 或者 读csv
+        if 1:
+            df_warning_trace_info, df_warning_keywords, df_warning_details,df_warning_weibo_comments, events_num, record_now  = get_newliest_events_data(node_code)
+
         print("GET EVENTS DATA DONE~")
 
         gz_path = '../gz/%s' % time_dir
         if not os.path.exists(gz_path):
             os.makedirs(gz_path)
 
-        # 当前有事件的情况
-        if len(df_warning_trace_info) + len(df_warning_keywords) + len(df_warning_details) > 0:
+        # 当前有事件的情况  —— 已经把这个逻辑加到取数据那边了， 这里可以保证可取到数据，不必再判断。2018/8/26
+        # if len(df_warning_trace_info) + len(df_warning_keywords) + len(df_warning_details) > 0:
             # 有新数据的时候，删除老数据
-            node_code_path = client_path + node_code
-            # a = os.path.exists(node_code_path)
-            if os.path.exists(node_code_path):
-                shutil.rmtree(node_code_path)
+        node_code_path = client_path + node_code
+        # a = os.path.exists(node_code_path)
+        if os.path.exists(node_code_path):
+            shutil.rmtree(node_code_path)
 
-            for prov in provinces:
-                reg = '\A' + prov
-                df_county_in_province = df_2861_county.filter(regex=reg, axis=0)
-                gov_codes = df_county_in_province.index
-                # 遍历一个省下的所有县
-                # 多进程执行
-                p = Pool(10)
-                for i in range(len(gov_codes)):
-                # for gov_code in gov_codes:
-                    count += 1
-                    if gov_codes[i] not in df_2861_county.index.values:
-                        continue
-                    # if gov_code in df_2861_county.index.values:
-                    p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time))
-                    # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time)
-                    time_loop1 = time.time()
-                    print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒'%((count*100/2852), (time_loop1-time_loop_start), (time_loop1-time_loop_start)*(2852-count)/count), end="")
-                    
-                p.close()
-                p.join()
+        for prov in provinces:
+            reg = '\A' + prov
+            df_county_in_province = df_2861_county.filter(regex=reg, axis=0)
+            gov_codes = df_county_in_province.index
+            # 遍历一个省下的所有县
+            # 多进程执行
+            p = Pool(10)
+            for i in range(len(gov_codes)):
+            # for gov_code in gov_codes:
+                count += 1
+                if gov_codes[i] not in df_2861_county.index.values:
+                    continue
+                # if gov_code in df_2861_county.index.values:
+                p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now))
+                # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
+                time_loop1 = time.time()
+                print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒'%((count*100/2852), (time_loop1-time_loop_start), (time_loop1-time_loop_start)*(2852-count)/count), end="")
 
-            # 复制column maps的方式 —— 比直接生成更慢。。
-            if 0:
-                copy_column_maps(node_code_path, provinces)
+            p.close()
+            p.join()
 
 
         # 当前没有追踪中的事件，就取历史事件，保证历史事件一定有~~
-        else:
-            trace_records = open('./trace_info_record.txt', encoding='utf-8').readlines()
-            trace_records.reverse()
-            # last_events_num = -1
-            events_type_nums = []
-            for record in trace_records:
-                if "events_type: %s"%events_type in record:
-                    # events_type_record.append(record)
-                    events_type_nums.append(int(record.split("events_num: ")[-1]))
-                    # break
-            # for i in
-            last_events_num = events_type_nums[0]
-            last_three_nums = events_type_nums[0:3]
-
-            # 上次跑运行中的事件数不为0 / apps里没有数据 / 最近三次跑的事件数都为0   —— 更新，重新提历史数据；PS:问题在于，如果每次选的省不一样，也需要重跑
-            if last_events_num != 0 or (not os.path.exists(client_path + node_code)) or last_three_nums.count(0) == 3 or (not same_provs):
-
-                df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before, df_warning_weibo_comments_before, events_num_before = get_events_data(monitor_time, events_type, record_now=False, events_limit=history_events_limit)
-
-                if len(df_warning_trace_info_before) + len(df_warning_keywords_before) + len(df_warning_details_before) > 0:
-                    # 上次有运行中的事件，这次没有的话，历史数据也要更新 —— 删掉之前的node_code目录；否则就不用删，直接保留上次的目录
-                    node_code_path = client_path + node_code
-                    # a = os.path.exists(node_code_path)
-                    if os.path.exists(node_code_path):
-                        shutil.rmtree(node_code_path)
-
-                    for prov in provinces:
-                        reg = '\A' + prov
-                        df_county_in_province = df_2861_county.filter(regex=reg, axis=0)
-                        gov_codes = df_county_in_province.index
-                        # 遍历一个省下的所有县
-                        # 多进程执行
-                        p = Pool(10)
-                        for i in range(len(gov_codes)):
-                            count += 1
-                            if gov_codes[i] not in df_2861_county.index.values:
-                                continue
-                            p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before,df_warning_weibo_comments_before, False))
-                            # generate_html_content(gov_codes[i], node_code, df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before, df_warning_weibo_comments_before, False)
-                            time_loop1 = time.time()
-                            print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒' % ((count * 100 / 2852), (time_loop1 - time_loop_start),(time_loop1 - time_loop_start) * (2852 - count) / count), end="")
-
-                        p.close()
-                        p.join()
+        # else:
+        #     trace_records = open('./trace_info_record.txt', encoding='utf-8').readlines()
+        #     trace_records.reverse()
+        #     # last_events_num = -1
+        #     events_type_nums = []
+        #     for record in trace_records:
+        #         if "events_type: %s"%events_type in record:
+        #             # events_type_record.append(record)
+        #             events_type_nums.append(int(record.split("events_num: ")[-1]))
+        #             # break
+        #     # for i in
+        #     last_events_num = events_type_nums[0]
+        #     last_three_nums = events_type_nums[0:3]
+        #
+        #     # 上次跑运行中的事件数不为0 / apps里没有数据 / 最近三次跑的事件数都为0   —— 更新，重新提历史数据；PS:问题在于，如果每次选的省不一样，也需要重跑
+        #     if last_events_num != 0 or (not os.path.exists(client_path + node_code)) or last_three_nums.count(0) == 3 or (not same_provs):
+        #
+        #         df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before, df_warning_weibo_comments_before, events_num_before = get_events_data(monitor_time, events_type, record_now=False, events_limit=history_events_limit)
+        #
+        #         if len(df_warning_trace_info_before) + len(df_warning_keywords_before) + len(df_warning_details_before) > 0:
+        #             # 上次有运行中的事件，这次没有的话，历史数据也要更新 —— 删掉之前的node_code目录；否则就不用删，直接保留上次的目录
+        #             node_code_path = client_path + node_code
+        #             # a = os.path.exists(node_code_path)
+        #             if os.path.exists(node_code_path):
+        #                 shutil.rmtree(node_code_path)
+        #
+        #             for prov in provinces:
+        #                 reg = '\A' + prov
+        #                 df_county_in_province = df_2861_county.filter(regex=reg, axis=0)
+        #                 gov_codes = df_county_in_province.index
+        #                 # 遍历一个省下的所有县
+        #                 # 多进程执行
+        #                 p = Pool(10)
+        #                 for i in range(len(gov_codes)):
+        #                     count += 1
+        #                     if gov_codes[i] not in df_2861_county.index.values:
+        #                         continue
+        #                     p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before,df_warning_weibo_comments_before, monitor_time, False))
+        #                     # generate_html_content(gov_codes[i], node_code, df_warning_trace_info_before, df_warning_keywords_before, df_warning_details_before, df_warning_weibo_comments_before, False)
+        #                     time_loop1 = time.time()
+        #                     print('\r当前进度：%.2f%%, 耗时：%.2f秒, 还剩：%.2f秒' % ((count * 100 / 2852), (time_loop1 - time_loop_start),(time_loop1 - time_loop_start) * (2852 - count) / count), end="")
+        #
+        #                 p.close()
+        #                 p.join()
 
         # 压缩数据 —— 保证每个node_code有数据的话，都在外面执行操作
         tar_file_name = node_code + '_apps.tar.gz'
@@ -1630,8 +1787,9 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         gz_cmd = "cd %s; tar -zcvf %s %s" % (server_src_zip, server_tar_file_path, 'apps/' + node_code)
         os.system(gz_cmd)
 
+        node_end_datetime = datetime.now()
         with open('./trace_info_record.txt', 'a', encoding='utf-8') as fp_out:
-            fp_out.write('monitor_time: %s;   done_time：%s    events_type: %s;    events_num: %d\n' % (monitor_time, time.strftime('%Y-%m-%d %H:%M:%S'), events_type, events_num))
+            fp_out.write('monitor_time: %s;   done_time：%s    events_type: %s;    events_num: %d;    time_taken: %.3fminutes\n' % (node_begin_datetime, node_end_datetime, events_type, events_num, (node_end_datetime-node_begin_datetime).seconds/60))
             print("Have recorded this time-%s-%s info already" % (monitor_time, events_type), flush=True)
 
 
@@ -1669,7 +1827,7 @@ def copy_column_maps(node_code_path, provinces):
 
 # 产生前端主界面文件
 # sched = BlockingScheduler()
-# @sched.scheduled_job('interval', seconds=1200)
+# @sched.scheduled_job('cron', hour='6-23', minute='25')
 def generate_datafile(provinces, same_provs=True):
     # provinces = ['1101', '5101']
     current_day = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -1690,10 +1848,10 @@ if __name__ == "__main__":
         '61', '62', '63', '64', '65'
     ]
     provinces = ['110101', '320623', '130624', '410381']
-    
+
     # 北京+成都
     provinces = ['1101', '5101']
-    
+
     # 北京+四川
     provinces = ['11', '51']
 
@@ -1710,8 +1868,22 @@ if __name__ == "__main__":
     if 0:
         scheduler = BlockingScheduler()
         # scheduler.add_job(generate_datafile, 'interval', hours=3)
-        scheduler.add_job(generate_datafile, 'cron', hour='7-23/2', args=(provinces, ))
+        scheduler.add_job(generate_datafile, 'cron', hour='7-23', minute='10', args=(provinces, ))
         scheduler.start()
+
+
+    if 0:
+        monitor_datetime = datetime(2018,8,27)
+        get_past_week_trace_events_num(monitor_datetime)
+        get_past_week_sys_info_num(monitor_datetime)
+        get_past_week_trace_info_num(monitor_datetime)
+
+    if 0:
+        time_start = datetime(2018,1,1)
+        time_end = datetime(2018,8,27)
+        rows = get_past_events_info(time_start, time_end)
+        df_temp = pd.DataFrame(rows)
+        print(df_temp)
 
 
 
