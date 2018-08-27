@@ -1783,8 +1783,9 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         # 压缩数据 —— 保证每个node_code有数据的话，都在外面执行操作
         tar_file_name = node_code + '_apps.tar.gz'
         server_tar_file_path = gz_path + '/' + tar_file_name
-        server_src_zip = '../'
-        gz_cmd = "cd %s; tar -zcvf %s %s" % (server_src_zip, server_tar_file_path, 'apps/' + node_code)
+        # server_src_zip = '../'
+        # gz_cmd = "cd %s; tar -zcvf %s %s" % (server_src_zip, server_tar_file_path, 'apps/' + node_code)
+        gz_cmd = "tar -zcvf %s %s" % (server_tar_file_path, '../apps/' + node_code)
         os.system(gz_cmd)
 
         node_end_datetime = datetime.now()
