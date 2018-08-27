@@ -784,11 +784,11 @@ if __name__ == "__main__":
         get_events_data(current_time, events_type)
 
     # 测试定时跑
-    if 0:
+    if 1:
         sched.start()
 
     # 测试
-    if 1:
+    if 0:
         fetch_events_data_regularly()
 
     if 0:

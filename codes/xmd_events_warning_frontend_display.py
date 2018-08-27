@@ -1860,16 +1860,16 @@ if __name__ == "__main__":
     # provinces = ['110101', '510704']
 
     # test
-    if 1:
+    if 0:
         provinces = ['11', '510704']
         # provinces = ['11', '51']
         generate_datafile(provinces_all)
 
     # 定时跑程序
-    if 0:
+    if 1:
         scheduler = BlockingScheduler()
         # scheduler.add_job(generate_datafile, 'interval', hours=3)
-        scheduler.add_job(generate_datafile, 'cron', hour='7-23', minute='10', args=(provinces, ))
+        scheduler.add_job(generate_datafile, 'cron', hour='7-23', minute='10', args=(provinces_all, ))
         scheduler.start()
 
 
