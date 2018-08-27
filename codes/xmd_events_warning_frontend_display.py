@@ -1521,7 +1521,7 @@ def run_command(sshclient, the_cmd):
 def get_newliest_events_data(node_code):
     events_node_dir = event_data_path + node_code + '/'
     version_file = events_node_dir + 'version.txt'
-    newest_date = open(version_file, 'r', encoding='utf-8').readlines()[-1].strip()
+    newest_date = open(version_file, 'r', encoding='utf-8-sig').readlines()[-1].strip()
     events_data_path = events_node_dir + newest_date + '/'
     df_warning_trace_info = pd.DataFrame(json.load(open(events_data_path+'trace_info.json', 'r')))
     df_warning_keywords = pd.DataFrame(json.load(open(events_data_path+'keywords.json', 'r')))
