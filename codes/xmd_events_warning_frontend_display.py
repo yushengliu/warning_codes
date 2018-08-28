@@ -1826,10 +1826,20 @@ def copy_column_maps(node_code_path, provinces):
     print("END COPY COLUMN MAPS, TIME TAKEN: %.2f seconds" % (copy_end - copy_begin))
     return
 
+provinces_all = [
+        '11', '12', '13', '14', '15',
+        '21', '22', '23',
+        '31', '32', '33', '34', '35', '36', '37',
+        '41', '42', '43', '44', '45', '46',
+        '50', '51', '52', '53', '54',
+        '61', '62', '63', '64', '65'
+    ]
+
+
 # 产生前端主界面文件
-# sched = BlockingScheduler()
-# @sched.scheduled_job('cron', hour='6-23', minute='25')
-def generate_datafile(provinces, same_provs=True):
+sched = BlockingScheduler()
+@sched.scheduled_job('cron', hour='7-23')
+def generate_datafile(provinces=provinces_all, same_provs=True):
     # provinces = ['1101', '5101']
     current_day = time.strftime('%Y-%m-%d %H:%M:%S')
     web_leaves_datafile(provinces, current_day, same_provs)
@@ -1867,11 +1877,11 @@ if __name__ == "__main__":
 
     # 定时跑程序
     if 1:
-        scheduler = BlockingScheduler()
-        # scheduler.add_job(generate_datafile, 'interval', hours=3)
-        scheduler.add_job(generate_datafile, 'cron', hour='7-23', minute='10', args=(provinces_all, ))
-        scheduler.start()
-
+        # scheduler = BlockingScheduler()
+        # # scheduler.add_job(generate_datafile, 'interval', hours=3)
+        # scheduler.add_job(generate_datafile, 'cron', hour='7-23', minute='10', args=(provinces_all, ))
+        # scheduler.start()
+        sched.start()
 
     if 0:
         monitor_datetime = datetime(2018,8,27)
