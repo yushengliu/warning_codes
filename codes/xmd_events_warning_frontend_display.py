@@ -606,8 +606,6 @@ def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, 
     events_short_dict = {}
     for events_head_id in events_head_ids:
         events_short_dict[events_head_id] = 'we' + str(events_head_ids.index(events_head_id))
-    # 万一一个区县发生了两件事儿呢？
-    # gov_ids = set(df_warning_trace_info['gov_id'])
     gov_ids = []
     gov_names = []
     newly_weibo_values = []
@@ -622,8 +620,7 @@ def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, 
         newly_weibo_values.append(weibo_value)
 
         # 给柱状图的牌子加上link
-        # gov_code = df_2861_county[df_2861_county.gov_id == gov_id].index.values[0]
-        gov_code_str = str(gov_code)[0:6]
+        # gov_code_str = str(gov_code)[0:6]
         # events_links.append("%s/%s/setting_%s_value_indexes"%(node_code, gov_code_str, events_short_dict[events_head_id]))
         events_links.append("%s/%s/setting_%s_value_indexes" % (node_code, common_folder_code, events_short_dict[events_head_id]))
 
@@ -688,6 +685,12 @@ def get_past_events_desc_per_gov(gov_code, df_past):
     datas += desc
     return datas
 
+# 去掉所有的HTML标签，将p标签用换行符隔开
+def tidy_rich_text(content):
+    new_content = content.replace('</p>','\n')
+    dr = re.compile(r'<[^>]+>', re.S)
+    new_content = dr.sub('', new_content)
+    return new_content
 # 预警前端
 def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now=True):
     """
@@ -731,7 +734,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     gov_names = []
     newly_weibo_values = []
     thd_grades = []
-    scope_grades = []
+    # scope_grades = []
     for events_head_id in events_head_ids:
         gov_id = df_warning_trace_info[df_warning_trace_info['events_head_id']==events_head_id]['gov_id'].values[0]
         gov_name = df_2861_county[df_2861_county['gov_id']==gov_id]['full_name'].values[0]
@@ -739,11 +742,11 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         for thd in thds:
             if weibo_value >= thd:
                 thd_grades.append(thd_desc[thds.index(thd)])
-                scope_grades.append(thd_desc[thds.index(thd)])
+                # scope_grades.append(thd_scopes[thds.index(thd)])
                 break
             if thds.index(thd) == 2:
                 thd_grades.append(thd_desc[3])
-                scope_grades.append(thd_scopes[3])
+                # scope_grades.append(thd_scopes[3])
         gov_ids.append(gov_id)
         gov_names.append(gov_name)
         newly_weibo_values.append(weibo_value)
@@ -940,10 +943,13 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     list_desc_data1.append(gov_info)
 
     # 第二行：监测详情 —— 本县
+    # 解读
+    MAPDESC = ""
     if (gov_name_current not in gov_names) or (not record_now):
         detail = "<section style='text-align:center'>%s: 暂未监测到%s隐患</section>"%(monitor_time_short, warning_type)
         detail_text = {"text":"%s"%detail}
         monitor_line = {"cols": [{"text": "<span style='color: orange'>本区县监测详情：</span>"}, detail_text], "strong": True}
+        MAPDESC += monitor_line["cols"][0]["text"] + detail
     else:
         # detail = "可能存在%s隐患，需引起注意！（详情见下列表）"%warning_type
         # ??? 一个区县多件事儿
@@ -957,6 +963,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         # list.index(i) —— 返回i元素在list中的第一个索引
         detail_text = {"text":"%s"%detail, "link":"#data:%s/%s/setting_%s_value_indexes"%(node_code, common_folder_code, events_short_dict[events_head_ids[gov_names.index(gov_name_current)]])}
         monitor_line = {"cols": [{"text": "<span style='color: orange'>本区县监测详情：</span>"}, warn_grade, detail_text], "strong":True}
+        MAPDESC += monitor_line["cols"][0]["text"] + warn_grade["text"]
     list_desc_data1.append(monitor_line)
 
     # 隐患区县 —— 设计成 C/B/A/tracing/base 阶梯状按钮形式
@@ -967,6 +974,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     warning_title = {"cols": [{"text": "全国%s隐患监测详情："%warning_type}, {"text":"%s"%detail}],
                      "color": "orange", "strong":True}
     list_desc_data1.append(warning_title)
+    MAPDESC += warning_title["cols"][0]["text"]
     # for key in WSTATUSES.keys():
     #     grade = WSTATUSES[key]['name']
     C_warning_button = {"cols":[{"text":"全国性事件：%d件"%thd_grades.count("C级"), "link":"#data:%s/%s/setting_C"%(node_code, gov_code_str)}, {"text":""}, {"text":""}]}
@@ -994,8 +1002,11 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     country_line8 = {"cols": [{"text": "系统新增互联网信息：<span style='color:orange'>%d</span>万条" % info_dict["past_week"]["sys_info"]}]}
     # country_line9 = {"cols": [{"text": "(包括新增微博等信息<span style='color:orange'>%d</span>条，新增评论、转发<span style='color:orange'>%d</span>条等）" % (100, 200)}]}
     list_desc_data1.extend([C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button, BASE_warning_data])
-    list_desc_data1.extend([null_line, country_line2, country_line3, country_line3_5, country_line4, country_line5, country_line6, country_line7, country_line8])
+    base_desc_lines = [country_line2, country_line3, country_line3_5, country_line4, country_line5, country_line6, country_line7, country_line8]
+    list_desc_data1.extend(base_desc_lines)
 
+    MAPDESC += ','.join([i["cols"][0]["text"] for i in base_desc_lines])
+    MAPDESC = tidy_rich_text(MAPDESC)
 
     # list_desc["local"]["datas"] = list_desc_data1
 
@@ -1015,7 +1026,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # list_desc["base"]["datas"] = list_desc_data_base
 
     # trace的desc
-    list_desc["trace"] = {"title": "", "sub_title": "", "width": "35%"}
+    list_desc["trace"] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
     list_desc_data_trace = deepcopy(list_desc_data1)
     if record_now:
         list_desc_data_trace[-2-9] = {"cols": [{"text": "<section style='text-align:center'>正在追踪的事件：%d件</section>"%len(events_head_ids)}], "strong": True, "color": FT_SOBER_BLUE}
@@ -1064,7 +1075,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # 保证A/B/C每个级别的事件不重叠 —— 2018/8/22
     for i in range(len(grades)):
         desc_id = grades[i][0]
-        list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%"}
+        list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
         list_desc_data = deepcopy(list_desc_data1)
         del list_desc_data[-3-9 - i]["cols"][0]["link"]
         list_desc_data[-3-9 - i]["cols"][0]["text"] = "<section style='text-align:center'>" + \
@@ -1122,6 +1133,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                 # "text": "返回首页", "link": "#data:setting"
 
                 warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key)
+                EVENTDESC = warn_event_data.split('<br/>')[0]
+                EVENTDESC = tidy_rich_text(EVENTDESC)
 
                 warn_info = {"cols": [{"text": warn_event_data}]}
                 list_desc_data2.extend([warn_title_info, warn_info, null_line])
@@ -1319,12 +1332,14 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                 list_desc_data2.extend(words_lines)
 
                 list_desc[index_id]["datas"] = list_desc_data2
+                # 解说
+                list_desc[index_id]["desc"] = EVENTDESC
 
                 # 剩下的其它状态
                 last_statuses = [i for i in thd_desc if i not in [status_grade, " ", 0]]
                 for status in last_statuses:
                     index_id_other = events_short_dict[events_head_id] + status[0]
-                    list_desc[index_id_other] = {"title": "", "sub_title": "", "width": "35%"}
+                    list_desc[index_id_other] = {"title": "", "sub_title": "", "width": "35%", "desc":EVENTDESC}
                     list_desc_data3 = [gov_info, warn_title_info, warn_info, null_line]
                     other_status_index = thd_desc.index(status)
                     tri_buttons_list_other = deepcopy(tri_buttons_list)
@@ -1401,6 +1416,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                         k = 80
                     weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...')}]}
                     list_desc_data4.extend([weibo_title, weibo_content])
+                    DETAILDESC = gov_title+":"+weibo_title["cols"][0]["text"]+":"+weibo_content["cols"][0]["text"]
+                    DETAILDESC = tidy_rich_text(DETAILDESC)
                     break
 
             # 评论信息
@@ -1433,6 +1450,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                 publish_info = {"cols":[{"text":row["post_name"]}, {"text":"%s"%row['event_participation']}, {"text":"%s"%row["publisher_impact"]}], "color":FT_SOBER_BLUE}
                 list_desc_data4.append(publish_info)
             list_desc[index_id]["datas"] = list_desc_data4
+            list_desc[index_id]["desc"] = DETAILDESC
     return setting_list, setting_name_list, list_desc
 
 
@@ -1712,6 +1730,8 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         if os.path.exists(node_code_path):
             shutil.rmtree(node_code_path)
 
+
+
         for prov in provinces:
             reg = '\A' + prov
             df_county_in_province = df_2861_county.filter(regex=reg, axis=0)
@@ -1720,11 +1740,9 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
             # 多进程执行
             p = Pool(10)
             for i in range(len(gov_codes)):
-            # for gov_code in gov_codes:
                 count += 1
                 if gov_codes[i] not in df_2861_county.index.values:
                     continue
-                # if gov_code in df_2861_county.index.values:
                 p.apply_async(generate_html_content, args=(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now))
                 # generate_html_content(gov_codes[i], node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
                 time_loop1 = time.time()
