@@ -25,7 +25,7 @@ from apscheduler.schedulers.background import BlockingScheduler
 
 data_path = './data/'
 event_data_path = '../events_data/'
-gaode_geo_path = data_path + 'df_2861_gaode_geo.csv'
+gaode_geo_path = data_path + 'df_2861_gaode_geo_new.csv'
 
 # client_path = './apps/'
 
@@ -480,13 +480,13 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     df_basic_events.reset_index(drop=True, inplace=True)
 
     # 删掉高新区的数据 —— 暂时没法上前端 —— 2018/9/5打开，需要高新区的数据
-    events_gov_ids = df_basic_events['gov_id'].tolist()
-    events_gov_ids_exact = [i if i in df_2861_county['gov_id'].tolist() else 0 for i in events_gov_ids]
+    # events_gov_ids = df_basic_events['gov_id'].tolist()
+    # events_gov_ids_exact = [i if i in df_2861_county['gov_id'].tolist() else 0 for i in events_gov_ids]
 
     # if gov_id not in df_2861_county['gov_id'].tolist():
     #     continue
 
-    df_basic_events.drop(df_basic_events.index[df_basic_events['gov_id'] != events_gov_ids_exact], inplace=True)
+    # df_basic_events.drop(df_basic_events.index[df_basic_events['gov_id'] != events_gov_ids_exact], inplace=True)
 
 
     for col in list(df_basic_events):

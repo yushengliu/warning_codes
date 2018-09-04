@@ -80,7 +80,7 @@ warning_dict = {
 
 data_path = './data/'
 sesi_words_path = data_path + 'sensitive_word_userdict.txt'
-gaode_geo_path = data_path + 'df_2861_gaode_geo.csv'
+gaode_geo_path = data_path + 'df_2861_gaode_geo_new.csv'
 
 client_path = '../apps/'
 event_data_path = '../events_data/'
