@@ -222,7 +222,7 @@ trace_db_obj = DataBasePython(host=trace_db_info["host"], user=trace_db_info["us
 # warning_path = './data/warning_frontend/'
 TRACE_LIMIT = 10
 COMMENTS_LIMIT = 100
-SHOW_COMMENTS_LIMIT = 6
+SHOW_COMMENTS_LIMIT = 20
 # max_key_words_num = 10
 history_events_limit = 10
 
@@ -572,8 +572,6 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         df_warning_details = df_warning_details.astype('object')
         # df_warning_details = df_warning_details.astype('object')
         # df_warning_details['comments'] = df_warning_details['comments'].apply(lambda x: deal_with_comments(x))
-
-
 
         # 每个事件取评论数最多的那条微博 （及其) 的评论
         # data_ids = []
