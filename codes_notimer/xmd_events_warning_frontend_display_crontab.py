@@ -158,7 +158,7 @@ source_dict = {"ip":"120.78.222.247", "port":22, "uname":"root", "password":"zhi
 product_server = database.get_database_server_by_nick(database.SERVER_PRODUCT)
 product_db = 'product'
 stats_table = 'xmd_weibo_stats'
-stable_past_table = 'xmd_stable_past_events'
+stable_past_table = 'xmd_stable_past_events_renew'
 
 
 
