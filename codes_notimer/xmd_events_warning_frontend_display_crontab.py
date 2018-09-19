@@ -1657,6 +1657,7 @@ def get_past_week_trace_info_num(monitor_datetime):
     sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num)-MIN(data_num) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;" % (trace_info_table, last_time, monitor_datetime)
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+    # conn.disconnect()
     # print(rows[0][0])
     return rows[0][0]
 
@@ -1675,6 +1676,7 @@ def get_past_week_sys_info_num(monitor_datetime):
     # print(ret.result)
     # print(rows)
     # print(rows[0]['sum'])
+    conn.disconnect()
     return rows[0]['sum']
 
 
@@ -1691,7 +1693,7 @@ def get_past_week_es_events_num(monitor_datetime):
         print(ret.result)
     info = rows[0]['info']
     num = rows[0]['num'] * HIDDEN_RATIO
-
+    conn.disconnect()
     return info, num
 
 
