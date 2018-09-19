@@ -131,6 +131,7 @@ history_events_limit = 10
 interhour = 1
 SHOW_COMMENTS_LIMIT = 50
 common_folder_code = '110101'
+HIDDEN_RATIO = 0.377  # 抽样检出
 
 df_warning_trace_info = pd.DataFrame()
 df_warning_keywords = pd.DataFrame()
@@ -159,6 +160,7 @@ product_server = database.get_database_server_by_nick(database.SERVER_PRODUCT)
 product_db = 'product'
 stats_table = 'xmd_weibo_stats'
 stable_past_table = 'xmd_stable_past_events_renew'
+es_stats_table = 'es_event_stats'
 
 
 
@@ -344,8 +346,9 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
     grades = ["A级", "B级", "C级"]
     events_grades = ["区域内", "省域级", "全国性"]
+    tips = {"value":"指数", "rank":"排名", "lala":"点击"}
     # gov_code_str = str(gov_code)[0:6]
-    df_column_in_trace = pd.DataFrame({"value": NEWLY_WEIBO_VALUES, "name": GOV_NAMES, "link": EVENTS_LINKS, "column_type": "a", "column_color":FT_SOBER_BLUE})
+    df_column_in_trace = pd.DataFrame({"value": NEWLY_WEIBO_VALUES, "name": GOV_NAMES, "link": EVENTS_LINKS, "column_type": "a", "column_color":FT_SOBER_BLUE, "lala":["进入事件详情"]*len(NEWLY_WEIBO_VALUES)})
     df_column_in_trace["rank"] = df_column_in_trace["value"].rank(ascending=False)
     if record_now:
         title = "2861区县%s隐患-追踪中" % event_type
@@ -355,7 +358,7 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
         title = "2861区县%s隐患-历史追踪事件" % event_type
         subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
         column_names = ['历史追踪的事件']
-    column_map_trace_dict = get_column_map_dict(df_column_in_trace, title, subtitle, column_names=column_names)
+    column_map_trace_dict = get_column_map_dict(df_column_in_trace, title, subtitle, column_names=column_names, tips=tips)
     # column_map_trace_dict = get_column_map_dict(df_column_in_trace)
     warning_map_data_list.append(column_map_trace_dict)
     warning_map_data_name_list.append('warning_column_trace_map')
@@ -392,7 +395,7 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
             title = "2861区县%s隐患-历史%s事件" % (event_type, grades[i])
             subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
             column_names = ["历史"+events_grades[i]+"事件"]
-        column_map_dict = get_column_map_dict(df_column, title, subtitle, column_names=column_names)
+        column_map_dict = get_column_map_dict(df_column, title, subtitle, column_names=column_names, tips=tips)
         # column_map_dict = get_column_map_dict(df_column)
         warning_map_data_list.append(column_map_dict)
         warning_map_data_name_list.append('warning_column_%s_map' % grades[i][0])
@@ -701,7 +704,7 @@ def get_past_events_desc_per_gov(gov_code, df_past):
                     "<br/><span style='color: #ffcc00;'>涉及部门：</span>%s" \
                     "<br/><span style='color: #ffcc00;'>涉及关键词：</span>%s</p>"\
                     %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'],df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
-            event_col = {"cols":[{"details":df_gov_past.loc[i, "first_content"], "text":desc}]}
+            event_col = {"cols":[{"details":df_gov_past.loc[i, "first_content"], "text":desc, "ismore":"查看微博全文"}]}
             # 2018/9/10 暂时不上【查看详情】，有bug
             # event_col = {"cols":[{"text":desc}]}
             event_info.append(event_col)
@@ -964,7 +967,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     common_data["thing"] = "%.2f"%info_dict["past_week"]["hiddens_info"]
     common_data["thing_num"] = "%.2f"%info_dict["past_week"]["events_info"]
     common_data["hot_thing"] = "%d"%info_dict["past_week"]["events_num"]
-    common_data["small_num"] = "1.9"
+    common_data["small_num"] = "%.2f"%info_dict["past_week"]["hiddens_num"]
 
     # if "past_events" in info_dict.keys():
     if node_code == "STABLE_WARNING":
@@ -1179,7 +1182,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                 search_key = ' '.join(df_event["search_key"].values[0].split(' ')[1:])
 
                 # warn_title = "<h3><section style='color: orange; text-align:center'>预警详情</section></h3>"
-                warn_title_info = {"cols": [{"text": "<section style='text-align:center'>预警详情</section>"}, {"text": "部分信息来源", "link": "#data:setting_%s_publishers" % EVENTS_SHORT_DICT[events_head_id]}, {"text": "返回首页", "link": "#back:"}], "bg_color":BT_TIFFANY_BLUE, "color":FT_PURE_WHITE, "strong":True}
+                warn_title_info = {"cols": [{"text": "<section style='text-align:center'>预警详情</section>"}, {"text": "部分信息来源", "link": "#data:%s/%s/setting_%s_publishers" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": "返回首页", "link": "#back:"}], "bg_color":BT_TIFFANY_BLUE, "color":FT_PURE_WHITE, "strong":True}
 
                 # "text": "返回首页", "link": "#data:setting"
 
@@ -1457,7 +1460,6 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
             if df_event.iloc[:, 0].size > 20:
                 df_event = df_event[0:20]
 
-
             # weibo_title = {"cols":[{"text":"<h3><section style='text-align:center'>事件相关微博</section></h3>"}], "strong":True, "color":FT_ORANGE}
             weibo_title = {"cols": [{"text": "部分事件信息"}],"strong": True, "color": FT_ORANGE}
             for i in df_event.index:
@@ -1467,7 +1469,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                         k = lenth
                     else:
                         k = 80
-                    weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...')}]}
+                    # 微博页【部分时间信息】也补上【查看详情】按钮
+                    weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...'), "details":"%s:%s"%(str(df_event.loc[i, 'pub_time']), str(df_event.loc[i, "content"])),"ismore":"查看全文"}]}
                     list_desc_data4.extend([weibo_title, weibo_content])
                     DETAILDESC = gov_title+":"+weibo_title["cols"][0]["text"]+":"+weibo_content["cols"][0]["text"]
                     DETAILDESC = tidy_rich_text(DETAILDESC)
@@ -1675,6 +1678,24 @@ def get_past_week_sys_info_num(monitor_datetime):
     return rows[0]['sum']
 
 
+# 统计小事件信息条数
+def get_past_week_es_events_num(monitor_datetime):
+    latest_time = (monitor_datetime - timedelta(days=5)).date()
+    last_time = (monitor_datetime - timedelta(days=12)).date()
+    sqlstr = "SELECT SUM(events_weibo_num) as info, SUM(events_num_origin) as num from %s where events_start_date >= '%s' and events_start_date <= '%s'"%(es_stats_table, last_time, latest_time)
+    conn = database.ConnDB(product_server, product_db)
+    conn.switch_to_arithmetic_write_mode()
+    ret = conn.read(sqlstr)
+    rows = ret.data
+    if not ret.code:
+        print(ret.result)
+    info = rows[0]['info']
+    num = rows[0]['num'] * HIDDEN_RATIO
+
+    return info, num
+
+
+
 # 取系统累计互联网信息条数
 def get_total_sys_info_num(monitor_datetime):
     latest_time = (monitor_datetime - timedelta(days=2)).date()
@@ -1796,7 +1817,9 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
     info_dict["past_week"]["events_num"] = get_past_week_trace_events_num(this_time)
     info_dict["past_week"]["events_info"] = get_past_week_trace_info_num(this_time)/10000
     info_dict["past_week"]["sys_info"] = get_past_week_sys_info_num(this_time)/100000000
-    info_dict["past_week"]["hiddens_info"] = 3.09
+    info, num = get_past_week_es_events_num(this_time)
+    info_dict["past_week"]["hiddens_info"] = info/10000
+    info_dict["past_week"]["hiddens_num"] = num/10000
     info_dict["total"]["sys_info"] = get_total_sys_info_num(this_time)/100000000
 
     for node_code in warning_dict.keys():
