@@ -22,6 +22,7 @@ import psycopg2
 import json
 from multiprocessing import Pool
 from apscheduler.schedulers.background import BlockingScheduler
+from collections import OrderedDict
 
 data_path = './data/'
 event_data_path = '../events_data/'
@@ -229,6 +230,7 @@ history_events_limit = 10
 # 微博数、评论数、阅读数、转发数、基础评论长度的系数，用于舆情评估模型
 g_all_events = {
     "1000":{
+        "node_code": "STABLE_WARNING",
         "events_model": "稳定",
         "events_type": 1000,
         "parameters": {
@@ -244,6 +246,7 @@ g_all_events = {
     },
 
     "2000":{
+        "node_code": "ENV_POTENTIAL",
         "events_model": "环境",
         "events_type": 2000,
         "parameters": {
@@ -433,6 +436,50 @@ def deal_with_comments(comments, comments_typical=True):
     return real_comments_list
 
 
+# 与上一期数据对比，返回{events_head_id：{"details":XX, "trace_info": XX,"comments":XX,  "keywords":XX}}
+def compare_to_last_time(df_basic_events, events_type):
+    inter_dict = {}
+    node_code = g_all_events[str(events_type)]["node_code"]
+    events_node_dir = event_data_path + node_code + '/'
+    with open(events_node_dir + 'version.txt', 'r', encoding='utf-8-sig') as fp:
+        file_version = fp.readlines()[-1].strip()
+    last_events_dir = events_node_dir + file_version + '/'
+    trace_dict = json.load(open(last_events_dir+'trace_info.json', 'r'), object_pairs_hook=OrderedDict)
+    df_last_trace = pd.DataFrame.from_dict(trace_dict)
+    # read_json会把日期字符串 自动转为timestamp??? load不会，太神奇了吧!!!
+    # df_last_trace = pd.read_json(last_events_dir+'trace_info.json', orient="records")
+    # 要排个序，dict转dataframe是乱的
+    df_last_trace = df_last_trace.sort_values(by=["events_head_id", "search_cnt"])
+    # 只取events_head_id和其对应最大的search_cnt出来
+    # 去重events_head_id, 留search_cnt最大
+    df_last_basic = df_last_trace.drop_duplicates(subset=['events_head_id'], keep='last')
+    df_last_basic = deepcopy(df_last_basic[['events_head_id', 'search_cnt']].reset_index(drop=True))
+    df_now_basic = deepcopy(df_basic_events[['events_head_id', 'search_cnt']].reset_index(drop=True))
+    # 参数不给默认求交集——how:"inner"，默认以两个df列的交集为标准——on=['xx','yy']
+    df_intersection = pd.merge(df_last_basic, df_now_basic)
+    if df_intersection.iloc[:,0].size > 0:
+        df_last_details = pd.DataFrame(json.load(open(last_events_dir + 'details.json', 'r')))
+        df_last_keywords = pd.DataFrame(json.load(open(last_events_dir + 'keywords.json', 'r')))
+        df_last_comments = pd.DataFrame(json.load(open(last_events_dir + 'comments.json', 'r')))
+        for index,row in df_intersection.iterrows():
+            events_head_id = row["events_head_id"]
+            inter_dict[events_head_id] = {}
+            # 直接append / concat 到现在的df后面
+            inter_dict[events_head_id]["trace_info"] = df_last_trace[df_last_trace["events_head_id"] == events_head_id]
+            inter_dict[events_head_id]["details"] = df_last_details[df_last_details["events_head_id"] == events_head_id]
+            # 关键词 —— [{events_head_id:XX, freq:XX ……}, ……]
+            # df_one_keywords = df_last_keywords[df_last_keywords["events_head_id"]==events_head_id]
+            # one_keywords_list = []
+            # for key_index,key_row in df_one_keywords.iterrows():
+            #     key_info = {}
+            #     for col in list(df_one_keywords):
+            #         key_info[col] = key_row[col]
+            #     one_keywords_list.append(key_info)
+            inter_dict[events_head_id]["keywords"] = df_last_keywords[df_last_keywords["events_head_id"] == events_head_id]
+            inter_dict[events_head_id]["comments"] = df_last_comments[df_last_comments["events_head_id"] == events_head_id]
+    return inter_dict
+
+
 # 生成数据表
 def get_events_data(version_date, events_type, record_now=True, events_limit=None):
     print("==========================\nversion_date=%s    events_type=%s    record_now=%s"%(version_date, events_type, record_now), flush=True)
@@ -479,6 +526,8 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
 
     df_basic_events.reset_index(drop=True, inplace=True)
 
+
+
     # 删掉高新区的数据 —— 暂时没法上前端 —— 2018/9/5打开，需要高新区的数据
     # events_gov_ids = df_basic_events['gov_id'].tolist()
     # events_gov_ids_exact = [i if i in df_2861_county['gov_id'].tolist() else 0 for i in events_gov_ids]
@@ -488,6 +537,21 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
 
     # df_basic_events.drop(df_basic_events.index[df_basic_events['gov_id'] != events_gov_ids_exact], inplace=True)
 
+    # 对当前取到的事件和前一次做一下判断，search_cnt有更新的才重新取，否则直接从前一个文件夹下取数据 —— 2018/9/20
+    # {events_head_id：{"details":XX, "trace_info": XX,"comments":XX,  "keywords":XX}}
+    inter_dict = compare_to_last_time(df_basic_events, events_type)
+
+    df_inter_trace = pd.DataFrame()
+    df_inter_details = pd.DataFrame()
+    df_inter_comments = pd.DataFrame()
+    df_inter_keywords = pd.DataFrame()
+
+    if len(inter_dict):
+        # 只有trace的do_time是timestamp的格式
+        df_inter_trace = pd.concat([inter_dict[key]["trace_info"] for key in inter_dict.keys()], ignore_index=True)
+        df_inter_details = pd.concat([inter_dict[key]["details"] for key in inter_dict.keys()], ignore_index=True)
+        df_inter_comments = pd.concat([inter_dict[key]["comments"] for key in inter_dict.keys()], ignore_index=True)
+        df_inter_keywords = pd.concat([inter_dict[key]["keywords"] for key in inter_dict.keys()], ignore_index=True)
 
     for col in list(df_basic_events):
         globals()[col+'s'] = list(df_basic_events[col])
@@ -527,6 +591,7 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     #         values_for_pic.extend(trace_info)
 
     # 2018/08/07 优化代码，SQL语句等
+    # _new 都是与上期比有更新的信息
     max_comment_dataids = []
     events_head_ids_new = []
     gov_ids_new = []
@@ -534,6 +599,16 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     key_word_strs_new = []
     start_times_new = []
     for events_head_id in events_head_ids:
+
+        # 判断当前events_head_id在不在与上期完全相同的交集里，在的话就continue
+        if events_head_id in inter_dict.keys():
+            # events_head_ids_new.append(events_head_id)
+            # gov_ids_new.append(gov_id)
+            # gov_names_new.append(gov_names[event_index])
+            # key_word_strs_new.append(key_word_strs[event_index])
+            # start_times_new.append(start_times[event_index])
+            continue
+
         event_index = events_head_ids.index(events_head_id)
         gov_id = gov_ids[event_index]
         trace_info = get_events_trace_info(events_head_id, gov_id=gov_id)
@@ -567,8 +642,10 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
     # 微博详情
     if len(weibo_details_all) != 0:
         df_warning_details = pd.DataFrame(weibo_details_all, columns=weibo_details_columns)
+        # if len(inter_dict):
         for i in ['pub_time', 'do_time', 'last_comment_time']:
             df_warning_details[i] = df_warning_details[i].dt.strftime('%Y-%m-%d %H:%M:%S')
+        df_warning_details = df_warning_details.append(df_inter_details, ignore_index=True)
         df_warning_details = df_warning_details.astype('object')
         # df_warning_details = df_warning_details.astype('object')
         # df_warning_details['comments'] = df_warning_details['comments'].apply(lambda x: deal_with_comments(x))
@@ -642,6 +719,9 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
                 lambda x: x[0:SHOW_COMMENTS_LIMIT])
             df_warning_weibo_comments['comments_shown'] = df_warning_weibo_comments['comments_shown'].apply(lambda x: deal_with_comments(x))
             # df_warning_weibo_comments.to_csv('comments_test2.csv', encoding='utf-8-sig')
+
+            # if len(inter_dict):
+            df_warning_weibo_comments = df_warning_weibo_comments.append(df_inter_comments, ignore_index=True)
             
         # 全量清洗
         if 0:
@@ -682,43 +762,46 @@ def get_events_data(version_date, events_type, record_now=True, events_limit=Non
         if len(key_words_all_events) != 0:
             df_warning_key_words = pd.DataFrame(key_words_all_events)
             df_warning_key_words['start_time'] = df_warning_key_words['start_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            df_warning_key_words = df_warning_key_words.append(df_inter_keywords, ignore_index=True)
+
             # df_warning_key_words.to_csv('keywords.csv', encoding='utf-8-sig')
         else:
-            df_warning_key_words = pd.DataFrame()
+            df_warning_key_words = df_inter_keywords
 
         comments_words_time = time.time()
         print("Get typical comments and keywords done : %s" % (comments_words_time - get_keywords_time), flush=True)
 
     else:
-        df_warning_details = pd.DataFrame()
-        df_warning_weibo_comments = pd.DataFrame()
-        df_warning_key_words = pd.DataFrame()
+        df_warning_details = df_inter_details
+        df_warning_weibo_comments = df_inter_comments
+        df_warning_key_words = df_inter_keywords
 
     # 数据信息
     if len(values_for_pic) != 0:
         df_warning_trace_info = pd.DataFrame(values_for_pic, columns=values_columns)
-        df_warning_trace_info['do_time'] = df_warning_trace_info['do_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
         df_warning_trace_info['weibo_value'] = K_weibo*df_warning_trace_info['data_num'] + \
                                                K_comment*df_warning_trace_info['count_comment'] + \
                                                K_read*df_warning_trace_info['count_read'] + \
                                                K_share*df_warning_trace_info['count_share']
+
+        df_warning_trace_info['do_time'] = df_warning_trace_info['do_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         # df_warning_trace_info.to_csv('trace_info.csv', encoding='utf-8-sig')
+        df_warning_trace_info = df_warning_trace_info.append(df_inter_trace, ignore_index=True)
 
         end_time = time.time()
         print("Other time: %s" % (end_time - comments_words_time), flush=True)
     else:
-        df_warning_trace_info = pd.DataFrame()
+        df_warning_trace_info = df_inter_trace
 
-
-
-    return df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, len(events_head_ids_new)
+    return df_warning_trace_info, df_warning_key_words, df_warning_details, df_warning_weibo_comments, len(events_head_ids_new)+len(inter_dict.keys())
 
 
 def fetch_events_data_regularly():
     for node_code in warning_dict.keys():
         record_now = True
         # 先不管稳定
-        if 0:
+        if 1:
             if node_code == "STABLE_WARNING":
                 continue
         monitor_datetime = datetime.now()
@@ -766,7 +849,11 @@ def fetch_events_data_regularly():
 if __name__ == "__main__":
     fetch_events_data_regularly()
 
-
+    # test
+    if 0:
+        running_seed_list = get_running_trace_seed_list(events_type=2000, record_now=True)
+        print(running_seed_list)
+        print(type(running_seed_list[0]))
 
 
 
