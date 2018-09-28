@@ -686,12 +686,43 @@ def get_past_events_desc_per_gov(gov_code, df_past):
     gov_name = df_2861_county.loc[gov_code, 'full_name']
     df_gov_past = deepcopy(df_past[df_past['gov_code'] == int(gov_code_str)])
     df_gov_past = df_gov_past.reset_index(drop=True)
-    event_info = []
+    current_event_info = []
+    past_event_info = []
+
     # 当前追踪
-    
+    # 小标题
+    current_desc = "<p><span style='color: %s;font-weight: bold'>当前追踪事件</span></p>"%FT_SOBER_BLUE
+    current_event_info.append({"cols":[{"text":current_desc}]})
+
+    df_current_events = deepcopy(DF_EVENTS_BASIC[DF_EVENTS_BASIC["gov_code"] == gov_code])
+    df_current_events = df_current_events.sort_values(by=['thd_grade'], ascending=True).reset_index(drop=True)
+    if df_current_events.shape[0] <= 0:
+        current_desc = "<p><span style='color: #ff1133;font-weight: bold'>本地暂无追踪事件。</span></p>"
+        current_event_info.append({"cols": [{"text": current_desc}]})
+    else:
+        j = 0
+        for index, row in df_current_events.iterrows():
+            j += 1
+            if row["thd_grade"] == "追踪中":
+                extent_word = row["scope_grade"]
+            else:
+                extent_word = row["scope_grade"] + "级"
+            current_desc = "<p><span style='color: #ffcc00;'>%d，[%s]%s</span><br/>时间：%s   影响人次：%s</p>"%(j, extent_word+"事件", row["events_content"], row["events_occur_time"], get_proper_unit_data(row["newly_weibo_value"]*526.32))
+            current_col = {"cols":[{"text": current_desc}]}
+            button_col = {"cols":[{"text":""}, {"text":""}, {"text":"查看追踪详情","link":"#data:%s"%row["events_link"], "islink":False}]}
+            current_event_info.extend([current_col, button_col])
+            # extent_word, row["events_content"], get_proper_unit_data(row["newly_weibo_value"] * 526.32)),
+            #                "link": "%s" % (row["events_link"])}
+            # unit4_cols.append(current_col)
+
+
+    # 过往事件
+    # 小标题
+    desc = "<p><span style='color: %s;font-weight: bold'>过往典型事件</span></p>"%FT_SOBER_BLUE
+    past_event_info.append({"cols":[{"text":desc}]})
     if df_gov_past.iloc[:,0].size == 0:
         desc = "<p><span style='color: #ff1133;font-weight: bold'>暂未监测到跟本地有关的热门话题！</span></p>"
-        event_info.append({"cols":[{"text":desc}]})
+        past_event_info.append({"cols":[{"text":desc}]})
     else:
         # desc = ""
         for i in df_gov_past.index.values:
@@ -711,7 +742,7 @@ def get_past_events_desc_per_gov(gov_code, df_past):
             event_col = {"cols":[{"details":df_gov_past.loc[i, "first_content"], "text":desc, "ismore":"查看微博全文"}]}
             # 2018/9/10 暂时不上【查看详情】，有bug
             # event_col = {"cols":[{"text":desc}]}
-            event_info.append(event_col)
+            past_event_info.append(event_col)
 
     # datas = ""
     # title = "<h1>%s</h1>" % (gov_name)
@@ -721,7 +752,11 @@ def get_past_events_desc_per_gov(gov_code, df_past):
     data_info = []
     title_info = {"cols":[{"text":"<h1>%s</h1>" % (gov_name)}]}
     data_info.append(title_info)
-    data_info.extend(event_info)
+    # 追踪中的事件
+    data_info.extend(current_event_info)
+
+    # 过往事件记录
+    data_info.extend(past_event_info)
 
     # return datas
     return data_info
@@ -754,9 +789,13 @@ def get_proper_unit_data(num):
 def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_now=True):
     gov_code_str = str(gov_code)[0:6]
     gov_name = df_2861_county.loc[gov_code, 'full_name']
+    event_type = warning_dict[node_code]["events_model"]
     warning_cover = {}
-    # 历史事件
-    warning_cover["up_button"] = [{"text":"事件记录", "link":"#list:%s/%s/past"%(node_code, gov_code_str)}]
+    # 历史事件 —— 环境暂时没有
+    if node_code == "STABLE_WARNING":
+        warning_cover["up_button"] = [{"text":"事件记录", "link":"#list:%s/%s/past"%(node_code, gov_code_str)}]
+    else:
+        warning_cover["up_button"] = []
     events_grades = ["全国级", "省域级", "区域级"]
     events_engs = ['C级', 'B级', 'A级']
     warning_cover["down_button"] = []
@@ -821,7 +860,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
 
     county_event_aug = get_past_week_trace_events_num(monitor_datetime, gov_code)
     county_event_all = get_total_trace_events_num(monitor_datetime, gov_code)
-    event_col1 = {"text":"过去一周，系统追踪过的热点事件：", "res":"%s件"%info_dict["past_week"]["events_num"]}
+    event_col1 = {"text":"过去一周，系统追踪热点事件：", "res":"%s件"%info_dict["past_week"]["events_num"]}
     event_col2 = {"text":"%s-新增追踪："%gov_name, "res":"%s件"%county_event_aug}
     event_col3 = {"text":"迄今为止，累计追踪热点事件：", "res":"%s件"%info_dict["total"]["events_num"]}
     event_col4 = {"text":"%s-累计追踪："%gov_name, "res":"%s件"%county_event_all}
@@ -835,7 +874,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     county_num = GOV_CODES.count(gov_code)
     prov_num = len([i for i in GOV_CODES if str(i).startswith(gov_code_str[0:2])])
     country_num = len(GOV_CODES)
-    unit4["up_title"] = "查询完成，%s当前追踪事件%s件，本省%s件，全国共%s件"%(gov_name.split('|')[-1], county_num, prov_num, country_num)
+    unit4["up_title"] = "查询完成，%s当前追踪【%s】相关事件%s件，本省%s件，全国共%s件"%(gov_name.split('|')[-1], event_type, county_num, prov_num, country_num)
     unit4["up_subtitle"] = "2861系统持续关注，每10~20分钟采样一次"
     unit4["down_title"] = "当前监测结果："
     unit4["scan_time"] = 0
@@ -843,7 +882,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
 
     current_col1 = {"text":"监测时间：%s"%monitor_time}
     gov_id = df_2861_county.loc[gov_code, 'gov_id']
-    current_col2 = {"text":"%s-当前追踪事件：%d件"%(gov_name, county_num)}
+    current_col2 = {"text":"%s-当前追踪[%s]相关事件：%d件"%(gov_name, event_type, county_num)}
     unit4_cols.extend([current_col1, current_col2])
     # DF_EVENTS_BASIC
     if county_num > 0 :
@@ -858,7 +897,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
             current_col = {"text":"%s事件:<br/>%s<br/>约%s人次在互联网上参与讨论。(事件预测准确率：75%%)"%(extent_word, row["events_content"], get_proper_unit_data(row["newly_weibo_value"]*526.32)), "link":"%s"%(row["events_link"])}
             unit4_cols.append(current_col)
 
-    current_col3 = {"text":"全国范围内当前追踪事件：共%d件"%country_num}
+    current_col3 = {"text":"全国范围内当前追踪[%s]相关事件：共%d件"%(event_type,country_num)}
     current_col4 = {"text":"其中，全国级影响力事件：%d件"%THD_GRADES.count("A级")}
     current_col5 = {"text": "省域级影响力事件：%d件" % THD_GRADES.count("B级")}
     current_col6 = {"text": "区域级影响力事件：%d件" % THD_GRADES.count("C级")}
@@ -870,7 +909,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     unit_details.append(unit4)
 
     warning_cover["unit_details"] = unit_details
-    warning_cover["final_desc"] = [{"cols":[{"text":"%s：当前追踪事件%s件，本省%s件，全国共%s件"%(gov_name, county_num, prov_num, country_num)}]}]
+    warning_cover["final_desc"] = [{"cols":[{"text":"2861%s监测系统-%s：当前追踪相关事件%s件，本省%s件，全国共%s件"%(event_type, gov_name, county_num, prov_num, country_num)}]}]
 
     return warning_cover
 
@@ -2043,15 +2082,27 @@ def assign_events_related_global_variables(node_code):
         df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
         # df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
         # df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
+        event_weibo_num = df_event.shape[0]
+        k = 0
         for index, row in df_event.iterrows():
+            k += 1
             content = row["content"].split("//@")[-1]
             if len(content) >= 10:
-                if len(content) <= 100:
+                if len(content) <= 150:
                     k = len(content)
                 else:
-                    k = 100
+                    k = 150
                 EVENTS_CONTENTS.append(content[0:k]+"...")
                 break
+            else:
+                if k == event_weibo_num:
+                    if len(df_event.loc[0, "content"].split("//@")[-1]) == 0:
+                        EVENTS_CONTENTS.append("暂无详情")
+                    else:
+                        EVENTS_CONTENTS.append(df_event.loc[0, "content"].split("//@")[-1])
+                else:
+                    continue
+
 
     df_data_dict = {"events_head_id":EVENTS_HEAD_IDS, "events_short":EVENTS_SHORT, "gov_id":GOV_IDS, "gov_code":GOV_CODES, "gov_name":GOV_NAMES, "newly_weibo_value":NEWLY_WEIBO_VALUES, "events_link":EVENTS_LINKS, "thd_grade":THD_GRADES, "scope_grade":SCOPE_GRADES, "events_occur_time":EVENTS_OCCUR_TIME, "events_content":EVENTS_CONTENTS}
     DF_EVENTS_BASIC = pd.DataFrame(df_data_dict)
