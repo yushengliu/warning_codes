@@ -118,7 +118,7 @@ LN_GOLDEN = "rgba(251,189,4,1)"
 LN_YELLOW = "rgba(253,253,2,1)"
 LN_RED = "rgba(227,8,10,1)"
 
-WCOLORS = {'A':LN_GOLDEN, "B":LN_YELLOW, "C":LN_RED}
+WCOLORS = {'A':LN_GOLDEN, "B":LN_YELLOW, "C":LN_RED, '追':FT_SOBER_BLUE}
 
 WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较小，易被忽略。但隐患正在积累，蓄势待发。', 'advise':"<span style='color: orange'>立即回应，进行处理</span>。此时处理，提前消除隐患，成本最低，体现对互联网的掌控能力。"},
              'warning_b': {'name': 'B级', 'area': '省域', 'desc':'影响中等，引发政府公信力危机，分管领导有可能被问责。', 'advise':"<span style='color: orange'>积极回应，及时处理</span>。若及时处理，可转危为安，体现应急响应能力。"},
@@ -142,11 +142,13 @@ df_warning_weibo_comments = pd.DataFrame()
 EVENTS_HEAD_IDS = []
 EVENTS_SHORT_DICT = {}
 GOV_IDS = []
+GOV_CODES = []
 GOV_NAMES = []
 NEWLY_WEIBO_VALUES = []
 EVENTS_LINKS = []
 THD_GRADES = []
 SCOPE_GRADES = []
+DF_EVENTS_BASIC = pd.DataFrame()
 
 # 'we0_value_index_trend'
 # 'we0_sens_word_trend'
@@ -353,11 +355,11 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
     if record_now:
         title = "2861区县%s隐患-追踪中" % event_type
         subtitle = "更新时间：%s" % str(version_date).split('.')[0]
-        column_names = ['正在追踪的事件']
+        column_names = ['正在追踪的事件：%d件'%len(NEWLY_WEIBO_VALUES)]
     else:
         title = "2861区县%s隐患-历史追踪事件" % event_type
         subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
-        column_names = ['历史追踪的事件']
+        column_names = ['历史追踪的事件：%d件'%len(NEWLY_WEIBO_VALUES)]
     column_map_trace_dict = get_column_map_dict(df_column_in_trace, title, subtitle, column_names=column_names, tips=tips)
     # column_map_trace_dict = get_column_map_dict(df_column_in_trace)
     warning_map_data_list.append(column_map_trace_dict)
@@ -390,11 +392,11 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
         if record_now:
             title = "2861区县%s隐患-%s预警中" % (event_type, grades[i])
             subtitle = "更新时间：%s" % str(version_date).split('.')[0]
-            column_names = [events_grades[i]+"事件"]
+            column_names = [events_grades[i]+"影响力事件：%d件"%df_column.shape[0]]
         else:
             title = "2861区县%s隐患-历史%s事件" % (event_type, grades[i])
             subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
-            column_names = ["历史"+events_grades[i]+"事件"]
+            column_names = ["历史"+events_grades[i]+"事件：%d件"%df_column.shape[0]]
         column_map_dict = get_column_map_dict(df_column, title, subtitle, column_names=column_names, tips=tips)
         # column_map_dict = get_column_map_dict(df_column)
         warning_map_data_list.append(column_map_dict)
@@ -678,13 +680,15 @@ def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, 
     return warning_map_data_list, warning_map_data_name_list, warning_line_data_list, warning_line_data_name_list
 
 
-# 过往事件list描述
+# 过往事件list描述 —— 2018/9/27改版为【事件记录】，所以要加上当前追踪的事件及按钮
 def get_past_events_desc_per_gov(gov_code, df_past):
     gov_code_str = str(gov_code)[0:6]
     gov_name = df_2861_county.loc[gov_code, 'full_name']
     df_gov_past = deepcopy(df_past[df_past['gov_code'] == int(gov_code_str)])
     df_gov_past = df_gov_past.reset_index(drop=True)
     event_info = []
+    # 当前追踪
+    
     if df_gov_past.iloc[:,0].size == 0:
         desc = "<p><span style='color: #ff1133;font-weight: bold'>暂未监测到跟本地有关的热门话题！</span></p>"
         event_info.append({"cols":[{"text":desc}]})
@@ -699,11 +703,11 @@ def get_past_events_desc_per_gov(gov_code, df_past):
             #         %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'],df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
             # 2018/9/10 改为指出能有微博详情的格式
             desc = "<p><span style='color: #ffcc00;'>%d，[主题]%s</span>" \
-                    "<br/>时间：%s" \
+                    "<br/>时间：%s   影响人次：%s" \
                     "<br/><span style='color: #ffcc00;'>涉及职务：</span>%s" \
                     "<br/><span style='color: #ffcc00;'>涉及部门：</span>%s" \
                     "<br/><span style='color: #ffcc00;'>涉及关键词：</span>%s</p>"\
-                    %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'],df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
+                    %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'], get_proper_unit_data(df_gov_past.loc[i, "event_value"]*526.32), df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
             event_col = {"cols":[{"details":df_gov_past.loc[i, "first_content"], "text":desc, "ismore":"查看微博全文"}]}
             # 2018/9/10 暂时不上【查看详情】，有bug
             # event_col = {"cols":[{"text":desc}]}
@@ -722,6 +726,7 @@ def get_past_events_desc_per_gov(gov_code, df_past):
     # return datas
     return data_info
 
+
 # 去掉所有的HTML标签，将p标签用换行符隔开
 def tidy_rich_text(content):
     new_content = content.replace('</p>','\n')
@@ -729,6 +734,145 @@ def tidy_rich_text(content):
     new_content = dr.sub('', new_content)
 
     return new_content
+
+
+# 调整数字单位， 默认最小单位是1
+def get_proper_unit_data(num):
+
+    if num >= 100000000:
+        return "%.2f亿"%(num/100000000)
+    if num >= 10000000:
+        return "%.2f千万"%(num/10000000)
+    if num >= 10000:
+        # print(type(num))
+        # print(num)
+        return "%.2f万"%(num/10000)
+    return "%d"%num
+
+
+# 生成新版360刷新首页 —— 2018/9/25
+def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_now=True):
+    gov_code_str = str(gov_code)[0:6]
+    gov_name = df_2861_county.loc[gov_code, 'full_name']
+    warning_cover = {}
+    # 历史事件
+    warning_cover["up_button"] = [{"text":"事件记录", "link":"#list:%s/%s/past"%(node_code, gov_code_str)}]
+    events_grades = ["全国级", "省域级", "区域级"]
+    events_engs = ['C级', 'B级', 'A级']
+    warning_cover["down_button"] = []
+    for i in range(len(events_grades)):
+        grade_button = {"text":events_grades[i], "link":"%s/%s/setting_%s"%(node_code, gov_code_str, events_engs[i][0])}
+        warning_cover["down_button"].append(grade_button)
+
+    # 追踪中
+    trace_button = {"text":"追踪中", "link":"%s/%s/setting"%(node_code, gov_code_str)}
+    warning_cover["down_button"].append(trace_button)
+
+    # 传多少个扫描单元
+    warning_cover["unit_num"] = 4
+    warning_cover["scan_total"] = 25
+    unit_details = []
+
+    # 第一个扫描单元
+    unit1 = {}
+    unit1["up_title"] = "正在扫描系统爬虫库：获取海量互联网信息"
+    unit1["up_subtitle"] = "提取2861个区县的草根数据，7*24小时不间断运行"
+    unit1["down_title"] = "基础信息："
+    unit1["scan_time"] = 12
+    # unit1_cols = []
+
+    monitor_datetime = datetime.strptime(monitor_time, '%Y-%m-%d %H:%M:%S')
+    # 过去一周系统新增
+    info_col1 = {"text":"过去一周，系统新增互联网信息：", "res":"%s条"%info_dict["past_week"]["sys_info"]}
+    county_info_aug = get_past_week_sys_info_num(monitor_datetime, gov_code)
+    county_info_all = get_total_sys_info_num(monitor_datetime, gov_code)
+    info_col2 = {"text":"%s-新增："%gov_name, "res":"%s条"%county_info_aug}
+    info_col3 = {"text":"迄今为止，系统累计互联网信息：", "res":"%s条"%info_dict["total"]["sys_info"]}
+    info_col4 = {"text":"%s-累计："%gov_name, "res":"%s条"%county_info_all}
+
+    unit1["cols"] = [info_col1, info_col2, info_col3, info_col4]
+
+    unit_details.append(unit1)
+
+    # 第二个扫描单元
+    unit2 = {}
+    unit2["up_title"] = "正在扫描隐患事件库：不放过任何一件小事"
+    unit2["up_subtitle"] = "检测潜在隐患，警惕小事变大事"
+    unit2["down_title"] = "隐患小事："
+    unit2["scan_time"] = 8
+
+    _, county_trifle_aug = get_past_week_es_events_num(monitor_datetime, gov_code)
+    _, county_trifle_all = get_total_es_events_num(monitor_datetime, gov_code)
+    trifle_col1 = {"text":"过去一周，全国新增隐患小事：", "res":"%s件"%info_dict["past_week"]["trifles_num"]}
+    trifle_col2 = {"text":"%s-新增："%gov_name, "res":"%s件"%county_trifle_aug}
+    trifle_col3 = {"text":"迄今为止，全国累计小事：", "res":"%s件"%info_dict["total"]["trifles_num"]}
+    trifle_col4 = {"text":"%s-累计："%gov_name, "res":"%s件"%county_trifle_all}
+
+    unit2["cols"] = [trifle_col1, trifle_col2, trifle_col3, trifle_col4]
+
+    unit_details.append(unit2)
+
+    # 第三个扫描单元
+    unit3 = {}
+    unit3["up_title"] = "正在扫描热点追踪库：持续追踪中不溜秋、易被忽略的范围热点"
+    unit3["up_subtitle"] = "系统实时追踪，侦测事态发展"
+    unit3["down_title"] = "热点事件："
+    unit3["scan_time"] = 5
+
+    county_event_aug = get_past_week_trace_events_num(monitor_datetime, gov_code)
+    county_event_all = get_total_trace_events_num(monitor_datetime, gov_code)
+    event_col1 = {"text":"过去一周，系统追踪过的热点事件：", "res":"%s件"%info_dict["past_week"]["events_num"]}
+    event_col2 = {"text":"%s-新增追踪："%gov_name, "res":"%s件"%county_event_aug}
+    event_col3 = {"text":"迄今为止，累计追踪热点事件：", "res":"%s件"%info_dict["total"]["events_num"]}
+    event_col4 = {"text":"%s-累计追踪："%gov_name, "res":"%s件"%county_event_all}
+
+    unit3["cols"] = [event_col1, event_col2, event_col3, event_col4]
+
+    unit_details.append(unit3)
+
+    # 结果单元
+    unit4 = {}
+    county_num = GOV_CODES.count(gov_code)
+    prov_num = len([i for i in GOV_CODES if str(i).startswith(gov_code_str[0:2])])
+    country_num = len(GOV_CODES)
+    unit4["up_title"] = "查询完成，%s当前追踪事件%s件，本省%s件，全国共%s件"%(gov_name.split('|')[-1], county_num, prov_num, country_num)
+    unit4["up_subtitle"] = "2861系统持续关注，每10~20分钟采样一次"
+    unit4["down_title"] = "当前监测结果："
+    unit4["scan_time"] = 0
+    unit4_cols = []
+
+    current_col1 = {"text":"监测时间：%s"%monitor_time}
+    gov_id = df_2861_county.loc[gov_code, 'gov_id']
+    current_col2 = {"text":"%s-当前追踪事件：%d件"%(gov_name, county_num)}
+    unit4_cols.extend([current_col1, current_col2])
+    # DF_EVENTS_BASIC
+    if county_num > 0 :
+        # thd_scopes = ["全国", "省域", "区域", "追踪中"]
+        df_events_county = deepcopy(DF_EVENTS_BASIC[DF_EVENTS_BASIC["gov_code"]==gov_code])
+        df_events_county = df_events_county.sort_values(by=['thd_grade'], ascending=True).reset_index(drop=True)
+        for index, row in df_events_county.iterrows():
+            if row["thd_grade"] == "追踪中":
+                extent_word = row["scope_grade"]
+            else:
+                extent_word = row["scope_grade"]+"级"
+            current_col = {"text":"%s事件:<br/>%s<br/>约%s人次在互联网上参与讨论。(事件预测准确率：75%%)"%(extent_word, row["events_content"], get_proper_unit_data(row["newly_weibo_value"]*526.32)), "link":"%s"%(row["events_link"])}
+            unit4_cols.append(current_col)
+
+    current_col3 = {"text":"全国范围内当前追踪事件：共%d件"%country_num}
+    current_col4 = {"text":"其中，全国级影响力事件：%d件"%THD_GRADES.count("A级")}
+    current_col5 = {"text": "省域级影响力事件：%d件" % THD_GRADES.count("B级")}
+    current_col6 = {"text": "区域级影响力事件：%d件" % THD_GRADES.count("C级")}
+
+    unit4_cols.extend([current_col3, current_col4, current_col5, current_col6])
+    unit4["cols"] = unit4_cols
+    unit4["color"] = "orange"
+
+    unit_details.append(unit4)
+
+    warning_cover["unit_details"] = unit_details
+    warning_cover["final_desc"] = [{"cols":[{"text":"%s：当前追踪事件%s件，本省%s件，全国共%s件"%(gov_name, county_num, prov_num, country_num)}]}]
+
+    return warning_cover
 
 
 # 预警前端
@@ -809,7 +953,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
             gov_value = NEWLY_WEIBO_VALUES[gov_index]
             thd_grade = THD_GRADES[gov_index]
             scope_grade = SCOPE_GRADES[gov_index]
-            if thd_grade == " ":
+            if thd_grade == "追踪中":
                 thd_grade = 0
                 scope_grade = 0
             elif thd_grade == "C级":
@@ -819,7 +963,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
             elif thd_grade == "A级":
                 thd_grade = scope_grade = 1
             df_id= pd.DataFrame({"value":[thd_grade], "name":gov_name_current, "rank":scope_grade})
-            if THD_GRADES[gov_index] == " ":
+            if THD_GRADES[gov_index] == "追踪中":
                 df_id['column_color'] = FT_SOBER_BLUE
             else:
                 df_id['column_color'] = color_dict[THD_GRADES[gov_index]]
@@ -860,7 +1004,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     setting0["datas"] = [data_dict]
     if record_now:
         data_dict["name"] = "2861区县%s隐患-追踪中" % warning_type
-        setting0["title"] = "事件追踪中"
+        setting0["title"] = "追踪中事件"
     else:
         data_dict["name"] = "2861区县%s隐患-历史追踪事件" % warning_type
         setting0["title"] = "历史追踪事件"
@@ -874,6 +1018,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # C/B/A级预警分布
     for key in WSTATUSES.keys():
         grade = WSTATUSES[key]['name']
+        area = WSTATUSES[key]['area']
         setting1 = {}
         data_dict = {}
         data_dict["id"] = grade[0]
@@ -882,10 +1027,12 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         # data_dict["data"] = '110101' + '/' + 'warning_column_%s_map'%grade[0]
         if record_now:
             data_dict["name"] = "2861区县%s隐患-%s预警中" % (warning_type, grade)
-            setting1["title"] = grade + "预警"
+            # setting1["title"] = grade + "预警"
+            setting1["title"] = area + "级事件"
         else:
             data_dict["name"] = "2861区县%s隐患-历史%s事件" % (warning_type, grade)
-            setting1["title"] = grade + "历史事件"
+            # setting1["title"] = grade + "历史事件"
+            setting1["title"] = area + "级历史事件"
         setting1["datas"] = [data_dict]
 
         setting_list.append(setting1)
@@ -955,19 +1102,19 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
     # 计算两个更新周期之间的新增事件信息条数
     # common_data["info_num"] = str(events_update_info_num_between(this_time))
-    common_data["info_num"] = "%d"%info_dict["monitor_aug"]
+    common_data["info_num"] = "%s"%info_dict["monitor_aug"]
     common_data["check_state"] = warning_type
     # if gov_name_current in gov_names:
     common_data["event"] = str(GOV_NAMES.count(gov_name_current))
     common_data["event_total"] = str(len(EVENTS_HEAD_IDS))
 
     # 2018/9/10 新增信息
-    common_data["internet"] = "%.2f"%info_dict["past_week"]["sys_info"]
-    common_data["internet_num"] = "%.2f"%info_dict["total"]["sys_info"]
-    common_data["thing"] = "%.2f"%info_dict["past_week"]["hiddens_info"]
-    common_data["thing_num"] = "%.2f"%info_dict["past_week"]["events_info"]
-    common_data["hot_thing"] = "%d"%info_dict["past_week"]["events_num"]
-    common_data["small_num"] = "%.2f"%info_dict["past_week"]["hiddens_num"]
+    common_data["internet"] = "%s"%info_dict["past_week"]["sys_info"]
+    common_data["internet_num"] = "%s"%info_dict["total"]["sys_info"]
+    common_data["thing"] = "%s"%info_dict["past_week"]["trifles_info"]
+    common_data["thing_num"] = "%s"%info_dict["past_week"]["events_info"]
+    common_data["hot_thing"] = "%s"%info_dict["past_week"]["events_num"]
+    common_data["small_num"] = "%s"%info_dict["past_week"]["trifles_num"]
 
     # if "past_events" in info_dict.keys():
     if node_code == "STABLE_WARNING":
@@ -980,7 +1127,12 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         df_past = pd.DataFrame(past_dict)
         # desc_past = get_past_events_desc_per_gov(gov_code, df_past)
         past_info = get_past_events_desc_per_gov(gov_code, df_past)
-        back_info = {"cols": [{"text": "返回", "link": "#list:%s/%s/trace"%(node_code, gov_code_str)}], "bg_color": BT_TIFFANY_BLUE,"color": FT_PURE_WHITE, "strong": True}
+        # back_info = {"cols": [{"text": "返回", "link": "#list:%s/%s/trace"%(node_code, gov_code_str)}], "bg_color": BT_TIFFANY_BLUE,"color": FT_PURE_WHITE, "strong": True}
+        # 2018-09-27改版，不是返回，是收起
+        #  "bg_color": BT_TIFFANY_BLUE,
+        back_info = {"cols": [{"text": "收起", "link": "#closeList:"}],
+                    "color": FT_PURE_WHITE, "strong": True}
+
         # past_info = {"cols": [{"text": "%s"%desc_past}]}
         datas = [back_info]
         datas.extend(past_info)
@@ -1005,7 +1157,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     else:
         # detail = "可能存在%s隐患，需引起注意！（详情见下列表）"%warning_type
         # ??? 一个区县多件事儿
-        if THD_GRADES[GOV_NAMES.index(gov_name_current)] == " ":
+        if THD_GRADES[GOV_NAMES.index(gov_name_current)] == "追踪中":
             warn_grade = {
                 "text": "<span style='color: %s'>" % (FT_SOBER_BLUE) + "事件追踪中" + "</span>"}
         else:
@@ -1050,9 +1202,9 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
     # 过去一周的新增信息 —— 统计在本地库，所以需要每周/月在本地统计，通过文件定期更新至服务器的方式，让前端每次读文件更新。 2018/8/22
     country_line5 = {"cols": [{"text": "过去一周："}]}
-    country_line6 = {"cols": [{"text": "追踪事件数：<span style='color:orange'>%d</span>件" % info_dict["past_week"]["events_num"]}]}
-    country_line7 = {"cols": [{"text": "新增事件相关信息：<span style='color:orange'>%.2f</span>万条" % info_dict["past_week"]["events_info"]}]}
-    country_line8 = {"cols": [{"text": "系统新增互联网信息：<span style='color:orange'>%.2f</span>万条" % info_dict["past_week"]["sys_info"]}]}
+    country_line6 = {"cols": [{"text": "追踪事件数：<span style='color:orange'>%s</span>件" % info_dict["past_week"]["events_num"]}]}
+    country_line7 = {"cols": [{"text": "新增事件相关信息：<span style='color:orange'>%s</span>条" % info_dict["past_week"]["events_info"]}]}
+    country_line8 = {"cols": [{"text": "系统新增互联网信息：<span style='color:orange'>%s</span>条" % info_dict["past_week"]["sys_info"]}]}
     # country_line9 = {"cols": [{"text": "(包括新增微博等信息<span style='color:orange'>%d</span>条，新增评论、转发<span style='color:orange'>%d</span>条等）" % (100, 200)}]}
     list_desc_data1.extend([C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button])
     # , BASE_warning_data, null_line
@@ -1079,8 +1231,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     #
     # list_desc["base"]["datas"] = list_desc_data_base
 
-    # trace的desc
-    list_desc["trace"] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
+    # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
+    # list_desc["trace"] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
     list_desc_data_trace = deepcopy(list_desc_data1)
     if record_now:
         list_desc_data_trace[-1] = {"cols": [{"text": "<section style='text-align:center'>正在追踪的事件：%d件</section>"%len(EVENTS_HEAD_IDS)}], "strong": True, "color": FT_SOBER_BLUE}
@@ -1096,7 +1248,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     #     event_info = {"cols":[{"text": "第%d名"%row["rank"]}, {"text": row["name"], "link": "#data:setting_%s_value_indexes"%events_short_dict[row["events_id"]]}], "color":FT_SOBER_BLUE}
     #     list_desc_data_trace.append(event_info)
 
-    list_desc["trace"]["datas"] = list_desc_data_trace
+    # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
+    # list_desc["trace"]["datas"] = list_desc_data_trace
 
     thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
@@ -1129,7 +1282,10 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # 保证A/B/C每个级别的事件不重叠 —— 2018/8/22
     for i in range(len(grades)):
         desc_id = grades[i][0]
-        list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
+
+        # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
+        # list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
+
         list_desc_data = deepcopy(list_desc_data1)
         del list_desc_data[-2 - i]["cols"][0]["link"]
         list_desc_data[-2 - i]["cols"][0]["text"] = "<section style='text-align:center'>" + \
@@ -1150,7 +1306,9 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         #                                                             "link": "#data:setting_%s_value_indexes" %
         #                                                                     events_short_dict[row["events_id"]]}], "color":color_dict[grades[i]]}
         #     list_desc_data.append(event_info)
-        list_desc[desc_id]["datas"] = list_desc_data
+
+        # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
+        # list_desc[desc_id]["datas"] = list_desc_data
 
     # 追踪指数信息对应的list_desc  —— 以下list_desc可以公用 —— 2018/8/15 —— 前端又要改，这个先暂缓
     # nearest_trace_time = max(df_warning_trace_info['do_time'].tolist())
@@ -1188,7 +1346,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
                 latest_weibo_value = df_event.loc[df_event['do_time'] == latest_trace, 'weibo_value'].values[0]
 
-                warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件影响人次：<span style='color: orange'>%d万</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, latest_weibo_value*526.32/10000)
+                warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件影响人次：<span style='color: orange'>%s</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, get_proper_unit_data(latest_weibo_value*526.32))
                 EVENTDESC = warn_event_data.split('<br/>')[0]
                 EVENTDESC = tidy_rich_text(EVENTDESC)
 
@@ -1286,7 +1444,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                     cant_reach = "newly_start"
                     cant_reach_dict = {}
                     # 追踪中
-                    if event_grade == " ":
+                    if event_grade == "追踪中":
                         event_status = ''
                         event_info = "事件追踪中。"
                         advise_info = "<span style='color: orange'>持续关注，及时应对。</span>"
@@ -1523,6 +1681,10 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
     if not os.path.exists(target_dir_path):
         os.makedirs(target_dir_path)
 
+    # 预警首页 —— 每个区县都有
+    warning_cover = get_warning_cover_data(gov_code, node_code, monitor_time, info_dict)
+    write_client_datafile_json(target_dir_path, 'warning_cover', '.json', warning_cover)
+
     # 地域分布
     if gov_code_str == common_folder_code:
         # 得到基础数据
@@ -1616,17 +1778,30 @@ def get_newliest_events_data(node_code):
         if (node_code in record_log) and (newest_date in record_log):
             infos_list = record_log.strip().split('-->')
             for i in infos_list:
-                if 'record_now' in i :
+                if 'record_now' in i:
                     record_now_str = i.split('record_now:')[-1].strip()
                     record_now = True if record_now_str == 'True' else False
-                if 'events_num' in i :
+                if 'events_num' in i:
                     events_num = int(i.split('events_num:')[-1].strip())
             break
 
     return df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now
 
 
+# 装饰器包裹函数 —— 处理返回数字自动转换
+def properUnit(func):
+    def wrapper(*args, **kwargs):
+        res = func(*args, **kwargs)
+        if isinstance(res, tuple):
+            res = tuple(get_proper_unit_data(i) for i in res)
+        else:
+            res = get_proper_unit_data(res)
+        return res
+    return wrapper
+
+
 # 计算两个更新周期之间的事件信息新增条数
+@properUnit
 def events_update_info_num_between(monitor_datetime):
     last_time = monitor_datetime - timedelta(hours=interhour)
     sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num+count_read+count_comment+count_share)-MIN(data_num+count_read+count_comment+count_share) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;"%(trace_info_table, last_time, monitor_datetime)
@@ -1641,16 +1816,32 @@ def events_update_info_num_between(monitor_datetime):
 
 
 # 计算近一周追踪事件数
-def get_past_week_trace_events_num(monitor_datetime):
+@properUnit
+def get_past_week_trace_events_num(monitor_datetime, gov_code=None):
     last_time = monitor_datetime - timedelta(days=7)
     sqlstr = "SELECT count(events_head_id) from %s where sync_time between '%s' and '%s'"%(trace_seed_table, last_time, monitor_datetime)
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " and gov_id=%d"%gov_id
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
     # print(rows[0][0])
     return rows[0][0]
 
 
+# 计算累计追踪事件数
+@properUnit
+def get_total_trace_events_num(monitor_datetime, gov_code=None):
+    sqlstr = "SELECT count(events_head_id) from %s"%trace_seed_table
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " where gov_id=%d"%gov_id
+    rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+    return rows[0][0]
+
+
 # 计算近一周追踪事件信息条数
+@properUnit
 def get_past_week_trace_info_num(monitor_datetime):
     last_time = monitor_datetime - timedelta(days=7)
     # 2018/9/9 由于累计的评论数目没有统计，所以暂改为全部只用微博条数 # +count_comment
@@ -1663,11 +1854,15 @@ def get_past_week_trace_info_num(monitor_datetime):
 
 
 # 计算近一周系统入库信息条数
-def get_past_week_sys_info_num(monitor_datetime):
+@properUnit
+def get_past_week_sys_info_num(monitor_datetime, gov_code=None):
     latest_time = (monitor_datetime - timedelta(days=2)).date()
     last_time = (monitor_datetime - timedelta(days=9)).date()
     # 2018/9/9 由于累计的评论数目没有统计，所以暂改为全部只用微博条数 # +daily_comment
     sqlstr = "SELECT SUM(daily_weibo) as sum from %s where pub_date >= '%s' and  pub_date <= '%s'"%(stats_table, last_time, latest_time)
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " and gov_id = %d" % gov_id
     conn = database.ConnDB(product_server, product_db)
     conn.switch_to_arithmetic_write_mode()
     ret = conn.read(sqlstr)
@@ -1680,39 +1875,75 @@ def get_past_week_sys_info_num(monitor_datetime):
     return rows[0]['sum']
 
 
-# 统计小事件信息条数
-def get_past_week_es_events_num(monitor_datetime):
+# 取系统累计互联网信息条数
+@properUnit
+def get_total_sys_info_num(monitor_datetime, gov_code=None):
+    latest_time = (monitor_datetime - timedelta(days=2)).date()
+    # 2018/9/9 由于累计的评论数目没有统计，所以暂改为全部只用微博条数 # +daily_comment
+    sqlstr = "SELECT SUM(total_weibo) as sum from %s where pub_date = '%s'" % (
+    stats_table, latest_time)
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " and gov_id=%d"%gov_id
+    conn = database.ConnDB(product_server, product_db)
+    conn.switch_to_arithmetic_write_mode()
+    ret = conn.read(sqlstr)
+    # print(ret.code)
+    if not ret.code:
+        print("Failed to get total sys info num ! ", ret.result)
+    rows = ret.data
+    # print(ret.result)
+    # print("rows:", rows)
+    # print(rows[0]['sum'])
+    return rows[0]['sum']
+
+
+# # 计算近一周本县入库信息条数
+# def
+
+
+# 统计小事件信息条数/件数
+@properUnit
+def get_past_week_es_events_num(monitor_datetime, gov_code=None):
     latest_time = (monitor_datetime - timedelta(days=5)).date()
     last_time = (monitor_datetime - timedelta(days=12)).date()
     sqlstr = "SELECT SUM(events_weibo_num) as info, SUM(events_num_origin) as num from %s where events_start_date >= '%s' and events_start_date <= '%s'"%(es_stats_table, last_time, latest_time)
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " and gov_id = %d"%gov_id
     conn = database.ConnDB(product_server, product_db)
     conn.switch_to_arithmetic_write_mode()
     ret = conn.read(sqlstr)
     rows = ret.data
     if not ret.code:
-        print(ret.result)
+        print("Failed to get past week es events num ! ", ret.result)
     info = rows[0]['info']
     num = rows[0]['num'] * HIDDEN_RATIO
+    if 0 < num < 1:
+        num = 1
     conn.disconnect()
     return info, num
 
 
-
-# 取系统累计互联网信息条数
-def get_total_sys_info_num(monitor_datetime):
-    latest_time = (monitor_datetime - timedelta(days=2)).date()
-    # 2018/9/9 由于累计的评论数目没有统计，所以暂改为全部只用微博条数 # +daily_comment
-    sqlstr = "SELECT SUM(total_weibo) as sum from %s where pub_date = '%s'" % (
-    stats_table, latest_time)
+# 统计过往累计小事件信息条数/件数
+@properUnit
+def get_total_es_events_num(monitor_datetime, gov_code=None):
+    sqlstr = "SELECT SUM(events_weibo_num) as info, SUM(events_num_origin) as num from %s where events_start_date <= '%s'"%(es_stats_table, monitor_datetime)
+    if gov_code is not None:
+        gov_id = df_2861_county.loc[gov_code, 'gov_id']
+        sqlstr += " and gov_id = %d"%gov_id
     conn = database.ConnDB(product_server, product_db)
     conn.switch_to_arithmetic_write_mode()
     ret = conn.read(sqlstr)
-    # print(ret.code)
     rows = ret.data
-    # print(ret.result)
-    # print(rows)
-    # print(rows[0]['sum'])
-    return rows[0]['sum']
+    if not ret.code:
+        print("Failed to get total es events num ! ", ret,result)
+    info = rows[0]['info']
+    num = rows[0]['num'] * HIDDEN_RATIO
+    if 0 < num < 1:
+        num = 1
+    conn.disconnect()
+    return info, num
 
 
 # 从云端数据库取历史事件信息
@@ -1733,20 +1964,29 @@ def assign_events_related_global_variables(node_code):
     global EVENTS_HEAD_IDS
     global EVENTS_SHORT_DICT
     global GOV_IDS
+    global GOV_CODES
     global GOV_NAMES
     global NEWLY_WEIBO_VALUES
     global EVENTS_LINKS
     global THD_GRADES
     global SCOPE_GRADES
+    global DF_EVENTS_BASIC
 
     EVENTS_HEAD_IDS = []
     EVENTS_SHORT_DICT = {}
+    EVENTS_SHORT = []
     GOV_IDS = []
+    GOV_CODES = []
     GOV_NAMES = []
     NEWLY_WEIBO_VALUES = []
     EVENTS_LINKS = []
     THD_GRADES = []
     SCOPE_GRADES = []
+    EVENTS_OCCUR_TIME = []
+
+    EVENTS_CONTENTS = []
+    DF_EVENTS_BASIC = pd.DataFrame()
+
 
     para_dict = warning_dict[node_code]["parameters"]
 
@@ -1757,6 +1997,8 @@ def assign_events_related_global_variables(node_code):
     # events_short_dict = {}
     for events_head_id in EVENTS_HEAD_IDS:
         EVENTS_SHORT_DICT[events_head_id] = 'we' + str(EVENTS_HEAD_IDS.index(events_head_id))
+        EVENTS_SHORT.append('we' + str(EVENTS_HEAD_IDS.index(events_head_id)))
+
 
     # 万一一个区县发生了两件事儿呢？
     # gov_ids = set(df_warning_trace_info['gov_id'])
@@ -1765,8 +2007,8 @@ def assign_events_related_global_variables(node_code):
     c_thd = para_dict['C_WARNING_Thd']
     # thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
     thds = [c_thd, b_thd, a_thd]
-    thd_desc = ["C级", "B级", "A级", " "]  # 空格表示追踪中，没到三级预警门限
-    thd_scopes = ["全国", "省域", "区域", " "]  # 空格表示追踪中，没到三级预警门限
+    thd_desc = ["C级", "B级", "A级", "追踪中"]  # 空格表示追踪中，没到三级预警门限
+    thd_scopes = ["全国", "省域", "区域", "追踪中"]  # 空格表示追踪中，没到三级预警门限
 
     # gov_ids = []
     # gov_names = []
@@ -1775,21 +2017,44 @@ def assign_events_related_global_variables(node_code):
     # scope_grades = []
     for events_head_id in EVENTS_HEAD_IDS:
         gov_id = df_warning_trace_info[df_warning_trace_info['events_head_id'] == events_head_id]['gov_id'].values[0]
+        gov_code = df_2861_county[df_2861_county['gov_id'] == gov_id].index.values[0]
         gov_name = df_2861_county[df_2861_county['gov_id'] == gov_id]['full_name'].values[0]
+        earliest_pub_time = str(df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()).split('.')[0]
         weibo_value = max(
             list(df_warning_trace_info[df_warning_trace_info['events_head_id'] == events_head_id]['weibo_value']))
+
         for thd in thds:
             if weibo_value >= thd:
                 THD_GRADES.append(thd_desc[thds.index(thd)])
-                SCOPE_GRADES.append(thd_desc[thds.index(thd)])
+                SCOPE_GRADES.append(thd_scopes[thds.index(thd)])
                 break
             if thds.index(thd) == 2:
                 THD_GRADES.append(thd_desc[3])
                 SCOPE_GRADES.append(thd_scopes[3])
         GOV_IDS.append(gov_id)
+        GOV_CODES.append(gov_code)
         GOV_NAMES.append(gov_name)
         NEWLY_WEIBO_VALUES.append(weibo_value)
+        EVENTS_OCCUR_TIME.append(earliest_pub_time)
         EVENTS_LINKS.append("%s/%s/setting_%s_value_indexes"%(node_code, common_folder_code, EVENTS_SHORT_DICT[events_head_id]))
+
+        # 事件内容
+        df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
+        df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
+        # df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
+        # df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
+        for index, row in df_event.iterrows():
+            content = row["content"].split("//@")[-1]
+            if len(content) >= 10:
+                if len(content) <= 100:
+                    k = len(content)
+                else:
+                    k = 100
+                EVENTS_CONTENTS.append(content[0:k]+"...")
+                break
+
+    df_data_dict = {"events_head_id":EVENTS_HEAD_IDS, "events_short":EVENTS_SHORT, "gov_id":GOV_IDS, "gov_code":GOV_CODES, "gov_name":GOV_NAMES, "newly_weibo_value":NEWLY_WEIBO_VALUES, "events_link":EVENTS_LINKS, "thd_grade":THD_GRADES, "scope_grade":SCOPE_GRADES, "events_occur_time":EVENTS_OCCUR_TIME, "events_content":EVENTS_CONTENTS}
+    DF_EVENTS_BASIC = pd.DataFrame(df_data_dict)
     return
 
 
@@ -1817,12 +2082,15 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
     # next_time = this_time + timedelta(hours=interhour)
     info_dict["monitor_aug"] = events_update_info_num_between(this_time)
     info_dict["past_week"]["events_num"] = get_past_week_trace_events_num(this_time)
-    info_dict["past_week"]["events_info"] = get_past_week_trace_info_num(this_time)/10000
-    info_dict["past_week"]["sys_info"] = get_past_week_sys_info_num(this_time)/100000000
+    info_dict["past_week"]["events_info"] = get_past_week_trace_info_num(this_time)
+    info_dict["past_week"]["sys_info"] = get_past_week_sys_info_num(this_time)
     info, num = get_past_week_es_events_num(this_time)
-    info_dict["past_week"]["hiddens_info"] = info/10000
-    info_dict["past_week"]["hiddens_num"] = num/10000
-    info_dict["total"]["sys_info"] = get_total_sys_info_num(this_time)/100000000
+    info_dict["past_week"]["trifles_info"] = info
+    info_dict["past_week"]["trifles_num"] = num
+    info_dict["total"]["sys_info"] = get_total_sys_info_num(this_time)
+    total_info, total_trifles = get_total_es_events_num(this_time)
+    info_dict["total"]["trifles_num"] = total_trifles
+    info_dict["total"]["events_num"] = get_total_trace_events_num(this_time)
 
     for node_code in warning_dict.keys():
         node_begin_datetime = datetime.now()
@@ -1843,7 +2111,6 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
             # 先不管稳定
             if node_code == "STABLE_WARNING":
                 continue
-
 
         global df_warning_trace_info
         global df_warning_keywords
@@ -1884,7 +2151,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
         # 2018/8/24 —— 更改了拿数据的方式，load json 或者 读csv
         if 1:
-            df_warning_trace_info, df_warning_keywords, df_warning_details,df_warning_weibo_comments, events_num, record_now  = get_newliest_events_data(node_code)
+            df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now  = get_newliest_events_data(node_code)
 
         print("GET EVENTS DATA DONE~")
 
@@ -2022,6 +2289,7 @@ def copy_column_maps(node_code_path, provinces):
     print("END COPY COLUMN MAPS, TIME TAKEN: %.2f seconds" % (copy_end - copy_begin))
     return
 
+
 provinces_all = [
         '11', '12', '13', '14', '15',
         '21', '22', '23',
@@ -2034,7 +2302,7 @@ provinces_all = [
 
 # 产生前端主界面文件
 def generate_datafile(provinces=provinces_all, same_provs=True):
-    # provinces = ['1101', '5101']
+    # provinces = ['110101', '510104']
     current_day = time.strftime('%Y-%m-%d %H:%M:%S')
     web_leaves_datafile(provinces, current_day, same_provs)
     # app_env_date = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -2044,14 +2312,4 @@ def generate_datafile(provinces=provinces_all, same_provs=True):
 
 if __name__ == "__main__":
     generate_datafile()
-
-
-
-
-
-
-
-
-
-
 
