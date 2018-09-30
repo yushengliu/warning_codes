@@ -44,6 +44,10 @@ warning_dict = {
             "A_WARNING_Thd": 20000,  # 影响力高于此值的事件属于A级预警（区域事件）
             "B_WARNING_Thd": 50000,  # 影响力高于此值的事件属于B级预警（省域事件）
             "C_WARNING_Thd": 100000,  # 影响力高于此值的事件属于C级预警（全国事件）
+
+            # "A_WARNING_Thd": 3800,  # 影响力高于此值的事件属于A级预警（区域事件） —— 2000000*1.9‰
+            # "B_WARNING_Thd": 57000,  # 影响力高于此值的事件属于B级预警（省域事件）—— 30000000*1.9‰
+            # "C_WARNING_Thd": 190000,  # 影响力高于此值的事件属于C级预警（全国事件）—— 100000000*1.9‰
             "Events_trace_v_Thd": 720, # 当跟踪的平均速度>=720(val/小时)时，采样频率最高，T最短为T_base(默认20分钟)，
                                     # 这样的话，当速度<=10(val/小时)时，trace_T就增加到24小时。
                                     # 平均速度<=30(val/小时)时，trace_T就增加到8小时，可以跨过夜间无人更新微博的时间段。
@@ -67,6 +71,10 @@ warning_dict = {
             "A_WARNING_Thd": 300,  # 影响力高于此值的事件属于A级预警（区域事件）
             "B_WARNING_Thd": 800,  # 影响力高于此值的事件属于B级预警（省域事件）
             "C_WARNING_Thd": 5000,  # 影响力高于此值的事件属于C级预警（全国事件）
+
+            # "A_WARNING_Thd": 300,  # 影响力高于此值的事件属于A级预警（区域事件）  3800 / 12.67
+            # "B_WARNING_Thd": 4500,  # 影响力高于此值的事件属于B级预警（省域事件）
+            # "C_WARNING_Thd": 15000,  # 影响力高于此值的事件属于C级预警（全国事件）
             "Events_trace_v_Thd": 720,  # 当跟踪的平均速度>=720(val/小时)时，采样频率最高，T最短为T_base(默认20分钟)，
             # 这样的话，当速度<=10(val/小时)时，trace_T就增加到24小时。
             # 平均速度<=30(val/小时)时，trace_T就增加到8小时，可以跨过夜间无人更新微博的时间段。
@@ -163,7 +171,6 @@ product_db = 'product'
 stats_table = 'xmd_weibo_stats'
 stable_past_table = 'xmd_stable_past_events_renew'
 es_stats_table = 'es_event_stats'
-
 
 
 class MyEncoder(json.JSONEncoder):
@@ -869,21 +876,23 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
 
     unit_details.append(unit3)
 
-    # 结果单元
+    # 结果单元  —— 2018/9/30 有更改， 加上统计信息
     unit4 = {}
     county_num = GOV_CODES.count(gov_code)
     prov_num = len([i for i in GOV_CODES if str(i).startswith(gov_code_str[0:2])])
     country_num = len(GOV_CODES)
     unit4["up_title"] = "查询完成，%s当前追踪【%s】相关事件%s件，本省%s件，全国共%s件"%(gov_name.split('|')[-1], event_type, county_num, prov_num, country_num)
     unit4["up_subtitle"] = "2861系统持续关注，每10~20分钟采样一次"
-    unit4["down_title"] = "当前监测结果："
+    unit4["down_title"] = "%s-监测结果(%s)："%(gov_name, monitor_time)
     unit4["scan_time"] = 0
     unit4_cols = []
 
-    current_col1 = {"text":"监测时间：%s"%monitor_time}
+    # current_col1 = {"text":"监测时间：%s"%monitor_time}
     gov_id = df_2861_county.loc[gov_code, 'gov_id']
-    current_col2 = {"text":"%s-当前追踪[%s]相关事件：%d件"%(gov_name, event_type, county_num)}
-    unit4_cols.extend([current_col1, current_col2])
+    # current_col2 = {"text":"%s-当前追踪[%s]相关事件：%d件"%(gov_name, event_type, county_num)}
+    current_col2 = {"text": "本县当前追踪[%s]相关事件：%d件" % (event_type, county_num)}
+    # unit4_cols.extend([current_col1, current_col2])
+    unit4_cols.extend([current_col2])
     # DF_EVENTS_BASIC
     if county_num > 0 :
         # thd_scopes = ["全国", "省域", "区域", "追踪中"]
@@ -897,19 +906,32 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
             current_col = {"text":"%s事件:<br/>%s<br/>约%s人次在互联网上参与讨论。(事件预测准确率：75%%)"%(extent_word, row["events_content"], get_proper_unit_data(row["newly_weibo_value"]*526.32)), "link":"%s"%(row["events_link"])}
             unit4_cols.append(current_col)
 
-    current_col3 = {"text":"全国范围内当前追踪[%s]相关事件：共%d件"%(event_type,country_num)}
-    current_col4 = {"text":"其中，全国级影响力事件：%d件"%THD_GRADES.count("A级")}
-    current_col5 = {"text": "省域级影响力事件：%d件" % THD_GRADES.count("B级")}
-    current_col6 = {"text": "区域级影响力事件：%d件" % THD_GRADES.count("C级")}
+    # current_col3 = {"text":"全国范围内当前追踪[%s]相关事件：共%d件"%(event_type,country_num)}
+    # current_col4 = {"text":"其中，全国级影响力事件：%d件"%THD_GRADES.count("A级")}
+    # current_col5 = {"text": "省域级影响力事件：%d件" % THD_GRADES.count("B级")}
+    # current_col6 = {"text": "区域级影响力事件：%d件" % THD_GRADES.count("C级")}
 
-    unit4_cols.extend([current_col3, current_col4, current_col5, current_col6])
+    current_col3 = {"text":"<span style='color:%s'>全国范围内当前追踪[%s]相关事件：共%d件。<br/>其中，全国级影响力事件：%d件；省域级影响力事件：%d件；区域级影响力事件：%d件。</span>"%("#48D1CC", event_type,country_num, THD_GRADES.count("C级"), THD_GRADES.count("B级"), THD_GRADES.count("A级"))}
+
+    # unit4_cols.extend([current_col3, current_col4, current_col5, current_col6])
+    unit4_cols.append(current_col3)
+
+    # 2018/9/30 —— 加上统计信息
+    current_col7 = {"text":"基础统计：过去一周，系统新增互联网信息%s条；本县新增%s条"%(info_dict["past_week"]["sys_info"], county_info_aug)}
+    current_col8 = {"text":"隐患信息：全国新增隐患小事%s件；本县新增%s件"%(info_dict["past_week"]["trifles_num"], county_trifle_aug)}
+    current_col9 = {"text":"热点事件：系统新增追踪%s件；本县追踪%s件"%(info_dict["past_week"]["events_num"], county_event_aug)}
+
+    current_col10 = {"text":"<span style='color:%s'>热点事件：系统新增追踪%s件；本县追踪%s件<br/>隐患信息：全国新增隐患小事%s件；本县新增%s件<br/>基础统计：过去一周，系统新增互联网信息%s条；本县新增%s条</span>"%("#48D1CC", info_dict["past_week"]["events_num"], county_event_aug, info_dict["past_week"]["trifles_num"], county_trifle_aug, info_dict["past_week"]["sys_info"], county_info_aug)}
+
+    # unit4_cols.extend([current_col7, current_col8, current_col9])
+    unit4_cols.append(current_col10)
     unit4["cols"] = unit4_cols
     unit4["color"] = "orange"
 
     unit_details.append(unit4)
 
     warning_cover["unit_details"] = unit_details
-    warning_cover["final_desc"] = [{"cols":[{"text":"2861%s监测系统-%s：当前追踪相关事件%s件，本省%s件，全国共%s件"%(event_type, gov_name, county_num, prov_num, country_num)}]}]
+    warning_cover["final_desc"] = [{"cols":[{"text":"2861%s监测系统-%s<br/>"%(event_type, gov_name)}]},{"cols":[{"text":"%s - 本县追踪事件%s件，本省%s件，全国共%s件"%(monitor_time, county_num, prov_num, country_num)}]}]
 
     return warning_cover
 
