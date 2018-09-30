@@ -526,7 +526,7 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
 
 
 # 关键词占比
-def get_warning_words_lines_data(df_warning_keywords, ersion_date):
+def get_warning_words_lines_data(df_warning_keywords, version_date):
     warning_line_data_list = []
     warning_line_data_name_list = []
     word_types = ['sensitive', 'department', 'guanzhi']
@@ -1887,7 +1887,14 @@ def get_past_week_trace_events_num(monitor_datetime, gov_code=None):
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
     # print(rows[0][0])
-    return rows[0][0]
+    if len(rows) == 0 or rows[0][0] is None:
+        if gov_code is None:
+            res = 800
+        else:
+            res = 0
+    else:
+        res = rows[0][0]
+    return res
 
 
 # 计算累计追踪事件数
@@ -1898,7 +1905,14 @@ def get_total_trace_events_num(monitor_datetime, gov_code=None):
         gov_id = df_2861_county.loc[gov_code, 'gov_id']
         sqlstr += " where gov_id=%d"%gov_id
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
-    return rows[0][0]
+    if len(rows) == 0 or rows[0][0] is None:
+        if gov_code is None:
+            res = 3769
+        else:
+            res = 0
+    else:
+        res = rows[0][0]
+    return res
 
 
 # 计算近一周追踪事件信息条数
@@ -1909,9 +1923,14 @@ def get_past_week_trace_info_num(monitor_datetime):
     sqlstr = "SELECT SUM(update_info) FROM (SELECT events_head_id, MAX(data_num)-MIN(data_num) AS update_info, MAX(do_time) AS do_time FROM %s WHERE do_time BETWEEN '%s' AND '%s' GROUP BY events_head_id) b;" % (trace_info_table, last_time, monitor_datetime)
 
     rows = trace_db_obj.select_data_from_db_one_by_one(trace_db_info["db_name"], sqlstr)
+
+    if len(rows) == 0 or rows[0][0] is None:
+        res = 0
+    else:
+        res = rows[0][0]
     # conn.disconnect()
     # print(rows[0][0])
-    return rows[0][0]
+    return res
 
 
 # 计算近一周系统入库信息条数
@@ -1933,7 +1952,16 @@ def get_past_week_sys_info_num(monitor_datetime, gov_code=None):
     # print(rows)
     # print(rows[0]['sum'])
     conn.disconnect()
-    return rows[0]['sum']
+
+    # 如果没取到数， 就默认1.01千万 —— 全国
+    if len(rows) == 0 or rows[0]['sum'] is None:
+        if gov_code is None:
+            res = 10100000
+        else:
+            res = 0
+    else:
+        res = rows[0]['sum']
+    return res
 
 
 # 取系统累计互联网信息条数
@@ -1956,7 +1984,14 @@ def get_total_sys_info_num(monitor_datetime, gov_code=None):
     # print(ret.result)
     # print("rows:", rows)
     # print(rows[0]['sum'])
-    return rows[0]['sum']
+    num = rows[0]['sum']
+    # 没取到/没更新，就给个默认值——2.8亿
+    if rows[0]['sum'] is None:
+        if gov_code is None:
+            num = 280000000
+        else:
+            num = 0
+    return num
 
 
 # # 计算近一周本县入库信息条数
@@ -1978,11 +2013,29 @@ def get_past_week_es_events_num(monitor_datetime, gov_code=None):
     rows = ret.data
     if not ret.code:
         print("Failed to get past week es events num ! ", ret.result)
+    # print(rows)
+    # if len(rows) == 0:
+
     info = rows[0]['info']
-    num = rows[0]['num'] * HIDDEN_RATIO
+    # try:
+    num = rows[0]['num']
+    if info is None:
+        if gov_code is None:
+            info = 50000
+        else:
+            info = 0
+    if num is None:
+        if gov_code is None:
+            num = 5000
+        else:
+            num = 0
+    num = num * HIDDEN_RATIO
+    # except Exception as e:
+    #     print(gov_code, e)
     if 0 < num < 1:
         num = 1
     conn.disconnect()
+    # print(info, num)
     return info, num
 
 
@@ -2000,7 +2053,18 @@ def get_total_es_events_num(monitor_datetime, gov_code=None):
     if not ret.code:
         print("Failed to get total es events num ! ", ret,result)
     info = rows[0]['info']
-    num = rows[0]['num'] * HIDDEN_RATIO
+    num = rows[0]['num']
+    if info is None:
+        if gov_code is None:
+            info = 4000000
+        else:
+            info = 0
+    if num is None:
+        if gov_code is None:
+            num = 390000
+        else:
+            num = 0
+    num = num * HIDDEN_RATIO
     if 0 < num < 1:
         num = 1
     conn.disconnect()
@@ -2384,5 +2448,11 @@ def generate_datafile(provinces=provinces_all, same_provs=True):
 
 
 if __name__ == "__main__":
-    generate_datafile()
+    if 1:
+        generate_datafile()
 
+    if 0:
+        monitor_datetime = datetime.now()
+        # for gov_code in df_2861_county.index:
+        gov_code = 130128000000
+        get_past_week_es_events_num(monitor_datetime, gov_code=gov_code)
