@@ -714,7 +714,7 @@ def get_past_events_desc_per_gov(gov_code, df_past):
                 extent_word = row["scope_grade"]
             else:
                 extent_word = row["scope_grade"] + "级"
-            current_desc = "<p><span style='color: #ffcc00;'>%d，[%s]%s</span><br/>时间：%s   影响人次：%s</p>"%(j, extent_word+"事件", row["events_content"], row["events_occur_time"], get_proper_unit_data(row["newly_weibo_value"]*526.32))
+            current_desc = "<p><span style='color: #ffcc00;'>%d，[%s]%s</span><br/>时间：%s   传播覆盖人次：%s</p>"%(j, extent_word+"事件", row["events_content"], row["events_occur_time"], get_proper_unit_data(row["newly_weibo_value"]*526.32))
             current_col = {"cols":[{"text": current_desc}]}
             button_col = {"cols":[{"text":""}, {"text":""}, {"text":"查看追踪详情","link":"#data:%s"%row["events_link"], "islink":False}]}
             current_event_info.extend([current_col, button_col])
@@ -741,7 +741,7 @@ def get_past_events_desc_per_gov(gov_code, df_past):
             #         %(i+1,df_gov_past.loc[i, 'event_title'],df_gov_past.loc[i, 'event_time_start'],df_gov_past.loc[i, 'gov_post'],df_gov_past.loc[i, 'department'],df_gov_past.loc[i, 'sensitive_word'])
             # 2018/9/10 改为指出能有微博详情的格式
             desc = "<p><span style='color: #ffcc00;'>%d，[主题]%s</span>" \
-                    "<br/>时间：%s   影响人次：%s" \
+                    "<br/>时间：%s   传播覆盖人次：%s" \
                     "<br/><span style='color: #ffcc00;'>涉及职务：</span>%s" \
                     "<br/><span style='color: #ffcc00;'>涉及部门：</span>%s" \
                     "<br/><span style='color: #ffcc00;'>涉及关键词：</span>%s</p>"\
@@ -921,7 +921,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     current_col8 = {"text":"隐患信息：全国新增隐患小事%s件；本县新增%s件"%(info_dict["past_week"]["trifles_num"], county_trifle_aug)}
     current_col9 = {"text":"热点事件：系统新增追踪%s件；本县追踪%s件"%(info_dict["past_week"]["events_num"], county_event_aug)}
 
-    current_col10 = {"text":"<span style='color:%s'>热点事件：系统新增追踪%s件；本县追踪%s件<br/>隐患信息：全国新增隐患小事%s件；本县新增%s件<br/>基础统计：过去一周，系统新增互联网信息%s条；本县新增%s条</span>"%("#48D1CC", info_dict["past_week"]["events_num"], county_event_aug, info_dict["past_week"]["trifles_num"], county_trifle_aug, info_dict["past_week"]["sys_info"], county_info_aug)}
+    current_col10 = {"text":"<span style='color:%s'>追踪引擎：过去一周，系统新增追踪%s件 [累计%s件]；%s - 追踪%s件 [累计%s件]<br/>隐患引擎：全国新增隐患小事%s件 [累计%s件]；%s - 新增%s件 [累计%s件]<br/>爬虫引擎：系统新增互联网信息%s条 [累计：%s条]；%s - 新增%s条 [累计%s条]</span>"%(FT_PURE_WHITE, info_dict["past_week"]["events_num"], info_dict["total"]["events_num"], gov_name.split('|')[-1], county_event_aug, county_event_all, info_dict["past_week"]["trifles_num"], info_dict["total"]["trifles_num"], gov_name.split('|')[-1], county_trifle_aug, county_trifle_all, info_dict["past_week"]["sys_info"],info_dict["total"]["sys_info"], gov_name.split('|')[-1], county_info_aug, county_info_all)}
 
     # unit4_cols.extend([current_col7, current_col8, current_col9])
     unit4_cols.append(current_col10)
@@ -1407,7 +1407,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
 
                 latest_weibo_value = df_event.loc[df_event['do_time'] == latest_trace, 'weibo_value'].values[0]
 
-                warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件影响人次：<span style='color: orange'>%s</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, get_proper_unit_data(latest_weibo_value*526.32))
+                warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件网上传播覆盖人次：<span style='color: orange'>%s</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, get_proper_unit_data(latest_weibo_value*526.32))
                 EVENTDESC = warn_event_data.split('<br/>')[0]
                 EVENTDESC = tidy_rich_text(EVENTDESC)
 
@@ -2288,7 +2288,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
 
         # 2018/8/24 —— 更改了拿数据的方式，load json 或者 读csv
         if 1:
-            df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now  = get_newliest_events_data(node_code)
+            df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now = get_newliest_events_data(node_code)
 
         print("GET EVENTS DATA DONE~")
 
