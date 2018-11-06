@@ -141,6 +141,13 @@ SHOW_COMMENTS_LIMIT = 50
 common_folder_code = '110101'
 HIDDEN_RATIO = 0.377  # 抽样检出
 
+# 调整扫描时间
+scan_total = 18
+unit1_scan = 8
+unit2_scan = 6
+unit3_scan = 4
+
+
 df_warning_trace_info = pd.DataFrame()
 df_warning_keywords = pd.DataFrame()
 df_warning_details = pd.DataFrame()
@@ -816,7 +823,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
 
     # 传多少个扫描单元
     warning_cover["unit_num"] = 4
-    warning_cover["scan_total"] = 25
+    warning_cover["scan_total"] = scan_total
     unit_details = []
 
     # 第一个扫描单元
@@ -824,7 +831,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     unit1["up_title"] = "正在扫描系统爬虫库：获取海量互联网信息"
     unit1["up_subtitle"] = "提取2861个区县的草根数据，7*24小时不间断运行"
     unit1["down_title"] = "基础信息："
-    unit1["scan_time"] = 12
+    unit1["scan_time"] = unit1_scan
     # unit1_cols = []
 
     monitor_datetime = datetime.strptime(monitor_time, '%Y-%m-%d %H:%M:%S')
@@ -845,7 +852,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     unit2["up_title"] = "正在扫描隐患事件库：不放过任何一件小事"
     unit2["up_subtitle"] = "检测潜在隐患，警惕小事变大事"
     unit2["down_title"] = "隐患小事："
-    unit2["scan_time"] = 8
+    unit2["scan_time"] = unit2_scan
 
     _, county_trifle_aug = get_past_week_es_events_num(monitor_datetime, gov_code)
     _, county_trifle_all = get_total_es_events_num(monitor_datetime, gov_code)
@@ -863,7 +870,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     unit3["up_title"] = "正在扫描热点追踪库：持续追踪中不溜秋、易被忽略的范围热点"
     unit3["up_subtitle"] = "系统实时追踪，侦测事态发展"
     unit3["down_title"] = "热点事件："
-    unit3["scan_time"] = 5
+    unit3["scan_time"] = unit3_scan
 
     county_event_aug = get_past_week_trace_events_num(monitor_datetime, gov_code)
     county_event_all = get_total_trace_events_num(monitor_datetime, gov_code)
