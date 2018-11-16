@@ -1217,6 +1217,7 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     # 第二行：监测详情 —— 本县
     # 解读
     MAPDESC = ""
+
     if (gov_name_current not in GOV_NAMES) or (not record_now):
         detail = "<section style='text-align:center'>%s: 暂未监测到%s隐患</section>"%(monitor_time_short, warning_type)
         detail_text = {"text":"%s"%detail}
@@ -1662,6 +1663,11 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
         # 博主影响力
         df_warning_details["publisher_impact"] = df_warning_details["followers_count"]
         for events_head_id in EVENTS_HEAD_IDS:
+
+            # debug
+            # if events_head_id != "c5b69fccbaca8720a2951470c51fab93":
+            #     continue
+
             index_id = EVENTS_SHORT_DICT[events_head_id]+'publisher'
             list_desc[index_id] = {"title":"", "sub_title": "", "width": "35%"}
             list_desc_data4 = []
@@ -1686,6 +1692,8 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
             if df_event.iloc[:, 0].size > 20:
                 df_event = df_event[0:20]
 
+            DETAILDESC = ""
+
             # weibo_title = {"cols":[{"text":"<h3><section style='text-align:center'>事件相关微博</section></h3>"}], "strong":True, "color":FT_ORANGE}
             weibo_title = {"cols": [{"text": "部分事件信息"}],"strong": True, "color": FT_ORANGE}
             for i in df_event.index:
@@ -1701,6 +1709,9 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                     DETAILDESC = gov_title+":"+weibo_title["cols"][0]["text"]+":"+weibo_content["cols"][0]["text"]
                     DETAILDESC = tidy_rich_text(DETAILDESC)
                     break
+
+            # if DETAILDESC == "":
+            #     print(events_head_id)
 
             # 评论信息
             df_comments = df_warning_weibo_comments.loc[(df_warning_weibo_comments.events_head_id == events_head_id), :]
@@ -1766,7 +1777,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
 
         # 得到setting和list文件
         setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
-        if len(setting_list)>0:
+        if len(setting_list) > 0:
             # for position in range(len(warning_map_data_list)):
             #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
             for set in range(len(setting_list)):
