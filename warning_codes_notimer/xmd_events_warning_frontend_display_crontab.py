@@ -24,10 +24,15 @@ from multiprocessing import Pool
 import time
 from datetime import datetime, timedelta
 import threading
+import collections
 
 # 自定义模块
 from db_interface import database
 from xmd_events_warning_data_generation_crontab import get_events_data, trace_db_obj, trace_info_table, trace_db_info, trace_seed_table
+
+from utilities.trace_event_line_fit import lineFitting
+from utilities import web_charts
+
 
 warning_dict = {
     "STABLE_WARNING": {
@@ -125,8 +130,20 @@ BG_RED = "#ff1c47"
 LN_GOLDEN = "rgba(251,189,4,1)"
 LN_YELLOW = "rgba(253,253,2,1)"
 LN_RED = "rgba(227,8,10,1)"
+ZZ_BLUE = "#9ff2e7"
+LN_WARNING_PINK = "rgba(250,192,230,1)"
 
-WCOLORS = {'A':LN_GOLDEN, "B":LN_YELLOW, "C":LN_RED, '追':FT_SOBER_BLUE}
+# 统一之后
+UN_TITLE_YELLOW = "#ffcc00"
+UN_STRESS_RED = "#ff1133"
+UN_LIGHT_GREEN = "#6cf2cb"
+
+BAR_PINK = "rgb(237,85,101)"
+
+WCOLORS = {'A':LN_GOLDEN, "B":LN_YELLOW, "C":LN_RED, '追':ZZ_BLUE}
+
+scopes_dict = {"A":"区域级", "B":"省域级", "C":"全国级", "追":"追踪中"}
+
 
 WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较小，易被忽略。但隐患正在积累，蓄势待发。', 'advise':"<span style='color: orange'>立即回应，进行处理</span>。此时处理，提前消除隐患，成本最低，体现对互联网的掌控能力。"},
              'warning_b': {'name': 'B级', 'area': '省域', 'desc':'影响中等，引发政府公信力危机，分管领导有可能被问责。', 'advise':"<span style='color: orange'>积极回应，及时处理</span>。若及时处理，可转危为安，体现应急响应能力。"},
@@ -134,12 +151,21 @@ WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较�
 
 # 'warning_c': {'name': 'C级', 'area': '全国', 'desc':'影响恶劣，响应迟钝或者处理不当，地方一把手的执政能力会受到质疑。', 'advise':"<span style='color: orange'>立即处理</span>。若处理得当，可亡羊补牢，降低掉帽子的风险。"
 
-max_key_words_num = 10
+max_key_words_num = 15
+max_medias_num = 20
 history_events_limit = 10
 interhour = 1
 SHOW_COMMENTS_LIMIT = 50
+SHOW_WEIBO_WORDS_LIMIT = 80
 common_folder_code = '110101'
 HIDDEN_RATIO = 0.377  # 抽样检出
+
+show_x_nums = 20
+page_before_lines = 32
+fixed_comments_num = 5  # 固定不滚动的评论数
+
+fitting_min_cnts = 5
+events_desc_width = "25%"
 
 # 调整扫描时间
 scan_total = 18
@@ -152,6 +178,9 @@ df_warning_trace_info = pd.DataFrame()
 df_warning_keywords = pd.DataFrame()
 df_warning_details = pd.DataFrame()
 df_warning_weibo_comments = pd.DataFrame()
+
+# 右侧描述
+list_desc = {}
 
 # 事件相关
 EVENTS_HEAD_IDS = []
@@ -202,14 +231,27 @@ def write_client_datafile_json(target_dir_path, file_name, postfix, ret_content)
 
 
 # 隐患接口：画有柱子的地图 —— 改一下， title和subtitle默认不给
-def get_column_map_dict( df_id, title=None, subtitle=None, tips=None, column_names=None):
+def get_column_map_dict(area_mode, gov_code, df_id, title=None, subtitle=None, tips=None, column_names=None):
     map_dict = {}
     if title is not None:
         map_dict["title"] = title
     if subtitle is not None:
         map_dict["subtitle"] = subtitle
     map_dict["type"] = "columnMap"
-    map_dict["geo_data"] = "2861_county_echars_geo"
+    # 全国
+    if area_mode == 1:
+        map_dict["geo_data"] = "2861_county_echars_geo"
+    # 试一下省图
+    elif area_mode == 2:
+        map_dict["geo_data"] = "province_" + str(gov_code)[0:2] + "_county_echars_geo"
+    # 测试一下市图
+    elif area_mode == 3:
+        map_dict["geo_data"] = "city_"+ str(gov_code)[0:4] +"_county_echars_geo"
+
+    # 其他乱输的情况 —— 默认给全国图
+    else:
+        map_dict["geo_data"] = "2861_county_echars_geo"
+
     details = {}
     datas = []
     columns = list(df_id)
@@ -218,6 +260,11 @@ def get_column_map_dict( df_id, title=None, subtitle=None, tips=None, column_nam
         for col in columns:
             # print(col)
             data_dict[col] = row[col]
+
+            # 判断一下元素有dict的情况 —— 正则
+            if re.search("{", str(row[col])):
+                data_dict[col] = eval(row[col])
+
         datas.append(data_dict)
     details["datas"] = datas
     if tips is None:
@@ -225,13 +272,39 @@ def get_column_map_dict( df_id, title=None, subtitle=None, tips=None, column_nam
     else:
         details["tips"] = tips
     column = {}
-    column["column_toggle"] = [True]
+    # column["column_toggle"] = [True]
     if column_names:
         column["column_names"] = column_names
     else:
         column["column_names"] = ["当前隐患突出的区县"]
-    column["column_types"] = list(set(df_id["column_type"]))
-    column['column_colors'] = list(set(df_id["column_color"]))
+
+    default_colors = list(WCOLORS.values())
+    # 全国在最前面
+    default_colors[0], default_colors[2] = default_colors[2], default_colors[0]
+    default_types = list(WCOLORS.keys())
+    default_types[0], default_types[2] = default_types[2], default_types[0]
+
+    # default_types = [i.lower() if i != "追" else "z" for i in default_types]
+
+    column_colors = list(set(df_id["column_color"]))
+    column_types = list(set(df_id["column_type"]))
+
+    column_colors.sort(key=default_colors.index)
+    column_types.sort(key=default_types.index)
+
+    # column["column_types"] = list(set(df_id["column_type"]))
+    # column['column_colors'] = list(set(df_id["column_color"]))
+
+    column["column_colors"] = column_colors
+    column["column_types"] = column_types
+    column["column_toggle"] = [True] * len(column_types)
+
+    column_names = ["%d个区县："%list(df_id["column_type"]).count(x)+scopes_dict[x]+"事件追踪中" if x != "追" else "%d个区县：隐患追踪中"%list(df_id["column_type"]).count(x) for x in column_types]   # x.upper()
+
+    # column_types = [i if i != "z" else "Z" for i in column_types]
+    # column["column_types"] = [i.lower() for i in column_types]
+    column["column_names"] = column_names
+
     details["column"] = column
     map_dict["detail"] = details
     return map_dict
@@ -283,7 +356,7 @@ def get_mixed_line_dict(title, subtitle, df_id, line_type=False, point_width=20,
 
 # 通用接口：生成多line类型的图——df_data：包括所有lines的数据【column用标志位替代，如a,b,c……】，和x轴的刻度【column名为x_name】
 # df_info: 以lines数据的标志位为index, 含两列，lines的name和对应每根线的color/style/dashStyle; xfont: 横轴的样式-{"xfont":18,"fontWeight":"bold","color":"#333"},//fontWeight:bold||normal；linewith：加粗的那根线（type为line）的宽度设置；ZeroMin=True:保证最小值大于0时，取纵轴最小为0--保证绝对位置
-def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=False, nodeshow=False, linewith=None, xfont=None, ZeroMin=True, signlist=None, signname=None, max_thd=None):
+def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=False, nodeshow=False, linewith=None, xfont=None, ZeroMin=True, signlist=None, signname=None, max_thd=None, tickx=None):
     lines_graph_dict = {}
     lines_graph_dict["type"] = "line"
     lines_graph_dict["title"] = title
@@ -296,6 +369,8 @@ def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=Fal
 
     if linewith:
         data_detail['linewith'] = linewith
+    if tickx:
+        data_detail['tickx'] = tickx
     if xfont is not None:
         data_detail['xfont'] = xfont
     data_detail["fontshow"] = fontshow
@@ -319,21 +394,20 @@ def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=Fal
             # if isinstance(i, int) or isinstance(i, float) or isinstance(i, int64):
             #     all_data_list.append(i)
             #     data_list.append(i)
-            if isinstance(i, str):
+            if isinstance(i, str) and (i != "null"):
                 all_data_list.append(eval(i)['y'])
                 data_list.append(eval(i))
             else:
-                all_data_list.append(i)
                 data_list.append(i)
+                if i != "null":
+                    all_data_list.append(i)
+
         line_dict["data"] = data_list
         line_list.append(line_dict)
 
     data_detail["line_list"] = line_list
     if ZeroMin:
-        if min(all_data_list) > 0:
-            min_thd = 0
-        else:
-            min_thd = min(all_data_list)-10
+        min_thd = 0
     else:
         min_thd = min(all_data_list)
     if max_thd is None:
@@ -352,6 +426,12 @@ def get_lines_graph_dict(title, subtitle, df_data, df_info, y_name, fontshow=Fal
 
 # 预警柱子分布图
 def get_warning_map_data(gov_code, node_code, parameters, version_date, record_now):
+    # global list_desc
+    # list_desc["page_list"] = {}
+
+    gov_name = df_2861_county.loc[gov_code, "full_name"]
+    gov_type = df_2861_county.loc[gov_code, "gov_type"]
+
     warning_map_data_list = []
     warning_map_data_name_list = []
     a_thd = parameters['A_WARNING_Thd']
@@ -362,10 +442,61 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
     grades = ["A级", "B级", "C级"]
     events_grades = ["区域内", "省域级", "全国性"]
-    tips = {"value":"指数", "rank":"排名", "lala":"点击"}
+    tips = {"events_num":"追踪事件数", "lala":"点击圆点"}   # "value":"事件影响力指数", "rank":"影响力排名",
     # gov_code_str = str(gov_code)[0:6]
-    df_column_in_trace = pd.DataFrame({"value": NEWLY_WEIBO_VALUES, "name": GOV_NAMES, "link": EVENTS_LINKS, "column_type": "a", "column_color":FT_SOBER_BLUE, "lala":["进入事件详情"]*len(NEWLY_WEIBO_VALUES)})
+    # df_column_in_trace = pd.DataFrame({"value": NEWLY_WEIBO_VALUES, "name": GOV_NAMES, "link": EVENTS_LINKS, "column_type": "a", "column_color":FT_SOBER_BLUE, "lala":["进入事件详情"]*len(NEWLY_WEIBO_VALUES)})
+
+    # 尝试画省图 —— 清洗只有本省的数据 2018/11/21
+    df_column_in_trace = pd.DataFrame(
+        {"value": NEWLY_WEIBO_VALUES, "name": GOV_NAMES, "link": EVENTS_LINKS, "column_type": "a",
+         "column_color": FT_SOBER_BLUE, "lala": ["查看本县事件"] * len(NEWLY_WEIBO_VALUES), "gov_code":GOV_CODES})  # , index=GOV_CODES
+
+    # 同一区县合并事件，加matte_pannel
+    df_trace_group = df_column_in_trace.groupby(["name"]).agg({"value":"max", "column_type":"max", "lala":"max", "gov_code":'max'}).reset_index()
+    df_trace_group.set_index(["gov_code"], inplace=True)
+    df_column_in_trace.set_index(["gov_code"],inplace=True)
+
+    for index, row in df_trace_group.iterrows():
+
+        df_gov = DF_EVENTS_BASIC[DF_EVENTS_BASIC["gov_name"] == row["name"]]
+        df_gov = df_gov.sort_values(by=["newly_weibo_value"], ascending=False).reset_index(drop=True)
+
+        # 判断本县最严重事件的等级，确定柱状气泡颜色
+        gov_bubble_color = WCOLORS[df_gov["thd_grade"].values[0][0]]
+        df_trace_group.loc[index, "column_color"] = gov_bubble_color
+        df_trace_group.loc[index, "column_type"] = df_gov["thd_grade"].values[0][0]
+
+        # 加一个区县追踪事件数
+        df_trace_group.loc[index, "events_num"] = df_gov.shape[0]
+
+        # # 替换掉“追”试试 —— 还是乱的，问题不在数据端，但先这样吧，不改回去了 —— 2018/12/3
+        # if df_gov["thd_grade"].values[0][0] == "追":
+        #     df_trace_group.loc[index, "column_type"] = "Z"
+
+        # df_trace_group.loc[index, "column_type"] = df_trace_group.loc[index, "column_type"].lower()
+
+        # 点击气泡后，弹出框的内容
+        content_list = [
+            "<p><span style='color:%s;font-size:16px;font-weight:bold;'>%s - <span style='color:%s'>%s</span>事件：%d件。</span></p><br/>" % (FT_PURE_WHITE, row["name"], UN_TITLE_YELLOW, event_type, df_gov.shape[0])]
+
+        # 框里的事件详情
+        for gov_index, gov_row in df_gov.iterrows():
+            event_str = "<p><%d>&nbsp<span style='color:%s'>■&nbsp&nbsp%s</span> - %s：%s<br/><a style='text-align:right;width:40%%;display:block;float:right;min-width:120px' class='link-widget' state='green_glass' href='#dataWarningCover:%s'>查看详情</a></p>"%(gov_index+1, WCOLORS[gov_row["thd_grade"][0]], (gov_row["scope_grade"]+"级影响" if len(gov_row["scope_grade"]) < 3 else gov_row["scope_grade"]), gov_row["events_occur_time"], (str(gov_row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT]+"……" if not str(gov_row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT].endswith("。") else str(gov_row["events_keytitle"]) if "暂无详情" in str(gov_row["events_content"]) else str(gov_row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT]), gov_row["events_link"])
+            content_list.append(event_str)
+
+        df_trace_group.loc[index, "matte_pannel"] = str({"cont":content_list[0]+"<br/><br/>".join(content_list[1:])})
+
+    # df_column_in_trace_prov = df_column_in_trace.filter(regex='\A'+str(gov_code)[0:2], axis=0)
+    # df_column_in_trace_city = df_column_in_trace.filter(regex='\A' + str(gov_code)[0:4], axis=0)
+
+    df_column_in_trace_city = df_trace_group.filter(regex='\A' + str(gov_code)[0:4], axis=0)
+    df_column_in_trace_prov = df_trace_group.filter(regex='\A' + str(gov_code)[0:2], axis=0)
+
     df_column_in_trace["rank"] = df_column_in_trace["value"].rank(ascending=False)
+    df_trace_group["rank"] = df_trace_group["value"].rank(ascending=False)
+    df_column_in_trace_city["rank"] = df_column_in_trace_city["value"].rank(ascending=False)
+    df_column_in_trace_prov["rank"] = df_column_in_trace_prov["value"].rank(ascending=False)
+
     if record_now:
         title = "2861区县%s隐患-追踪中" % event_type
         subtitle = "更新时间：%s" % str(version_date).split('.')[0]
@@ -374,10 +505,34 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
         title = "2861区县%s隐患-历史追踪事件" % event_type
         subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
         column_names = ['历史追踪的事件：%d件'%len(NEWLY_WEIBO_VALUES)]
-    column_map_trace_dict = get_column_map_dict(df_column_in_trace, title, subtitle, column_names=column_names, tips=tips)
-    # column_map_trace_dict = get_column_map_dict(df_column_in_trace)
-    warning_map_data_list.append(column_map_trace_dict)
-    warning_map_data_name_list.append('warning_column_trace_map')
+
+    # 直辖市的区县 / 省直辖县 / 直辖市的高新区 / 国家级新区 —— 没有市图
+    if gov_type not in [4, 5, 7, 10]:
+        # 本市有事件发生才加
+        if df_column_in_trace_city.shape[0] > 0:
+
+            title_city = "<span style='color:%s;font-size:24px;font-weight:bold;'> %s </span>：正在追踪的<span style='color:%s;font-weight:bold;'>%s</span>事件"%(UN_TITLE_YELLOW, gov_name.split('|')[1], UN_TITLE_YELLOW, event_type)
+
+            # title_city += title_local
+            column_map_trace_dict = get_column_map_dict(3, gov_code, df_column_in_trace_city, title_city, subtitle, tips=tips)  # column_names=column_names,
+
+            warning_map_data_list.append(column_map_trace_dict)
+            warning_map_data_name_list.append('warning_column_trace_map')
+
+    if df_column_in_trace_prov.shape[0] > 0:
+        title_prov = "<span style='color:%s;font-size:24px;font-weight:bold;'> %s </span>：正在追踪的<span style='color:%s;font-weight:bold;'>%s</span>事件"%(UN_TITLE_YELLOW, gov_name.split('|')[0], UN_TITLE_YELLOW, event_type)
+        column_map_prov_dict = get_column_map_dict(2, gov_code, df_column_in_trace_prov, title_prov, subtitle, tips=tips)   # column_names=column_names,
+
+        warning_map_data_list.append(column_map_prov_dict)
+        warning_map_data_name_list.append('warning_column_prov_map')
+
+    if df_trace_group.shape[0] > 0:
+        title_country = "<span style='color:%s;font-size:24px;font-weight:bold;'> 全国 </span>：当前所有追踪的<span style='color:%s;font-weight:bold;'>%s</span>事件" % (
+        UN_TITLE_YELLOW, UN_TITLE_YELLOW, event_type)
+        column_map_country_dict = get_column_map_dict(1, gov_code, df_trace_group, title_country, subtitle, tips=tips)   # column_names=column_names,
+
+        warning_map_data_list.append(column_map_country_dict)
+        warning_map_data_name_list.append("warning_column_country_map")
 
     # # 分级画事件地图 —— 各级不能有交叉 2018/8/20
     # for grade in thd_dict.keys():
@@ -396,25 +551,55 @@ def get_warning_map_data(gov_code, node_code, parameters, version_date, record_n
 
     # 分级画事件地图 —— 各级不能有交叉 2018/8/20
     # if gov_code_str == common_folder_code: —— 试一下每个区县单独生成map
-    for i in range(len(grades)):
-        if i == len(grades)-1:
-            df_column = deepcopy(df_column_in_trace[df_column_in_trace["value"] >= thd_dict[grades[i]]])
+
+    # grades_re = grades[::-1]
+    grades_re = deepcopy(grades)
+    df_column_in_trace = deepcopy(df_trace_group)
+    grades_data_list = []
+    grades_name_list = []
+    for i in range(len(grades_re)):
+        if i == len(grades_re)-1:
+            df_column = deepcopy(df_column_in_trace[df_column_in_trace["value"] >= thd_dict[grades_re[i]]])
         else:
-            df_column = deepcopy(df_column_in_trace[(df_column_in_trace["value"] >= thd_dict[grades[i]])&(df_column_in_trace["value"]<thd_dict[grades[i+1]])])
-        df_column["column_color"] = color_dict[grades[i]]
-        df_column["rank"] = df_column["value"].rank(ascending=False)
-        if record_now:
-            title = "2861区县%s隐患-%s预警中" % (event_type, grades[i])
-            subtitle = "更新时间：%s" % str(version_date).split('.')[0]
-            column_names = [events_grades[i]+"影响力事件：%d件"%df_column.shape[0]]
-        else:
-            title = "2861区县%s隐患-历史%s事件" % (event_type, grades[i])
-            subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
-            column_names = ["历史"+events_grades[i]+"事件：%d件"%df_column.shape[0]]
-        column_map_dict = get_column_map_dict(df_column, title, subtitle, column_names=column_names, tips=tips)
-        # column_map_dict = get_column_map_dict(df_column)
-        warning_map_data_list.append(column_map_dict)
-        warning_map_data_name_list.append('warning_column_%s_map' % grades[i][0])
+            df_column = deepcopy(df_column_in_trace[(df_column_in_trace["value"] >= thd_dict[grades_re[i]])&(df_column_in_trace["value"]<thd_dict[grades_re[i+1]])])
+
+        # 各个预警等级有事件才往下走
+        if df_column.shape[0] > 0:
+
+            df_column["column_color"] = color_dict[grades_re[i]]
+            df_column["rank"] = df_column["value"].rank(ascending=False)
+            if record_now:
+                # title = "2861区县%s隐患-%s预警中" % (event_type, grades_re[i])
+                title = "<span style='color:%s;font-size:24px;font-weight:bold;'> 全国 </span>：%s事件<span style='color:%s;font-weight:bold;'>%s</span>预警 - %s级事件"%(UN_TITLE_YELLOW, event_type, UN_TITLE_YELLOW, grades_re[i], events_grades[i][:-1])
+                subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+                column_names = [events_grades[i]+"影响力事件：%d件"%df_column.shape[0]]
+            else:
+                title = "2861区县%s隐患-历史%s事件" % (event_type, grades_re[i])
+                subtitle = "最后一次追踪时间：%s" % str(version_date).split('.')[0]
+                column_names = ["历史"+events_grades[i]+"事件：%d件"%df_column.shape[0]]
+
+            column_map_dict = get_column_map_dict(1, gov_code, df_column, title, subtitle, column_names=column_names, tips=tips)
+            grades_data_list.append(column_map_dict)
+            grades_name_list.append('warning_column_%s_map' % grades_re[i][0])
+
+    warning_map_data_list.extend(grades_data_list[::-1])
+    warning_map_data_name_list.extend(grades_name_list[::-1])
+
+    # 本县有无事件发生 —— 对本县情况先做判断，更改市图/省图/国图，anyway第一张地图的标题
+    # if gov_name in df_trace_group["name"].tolist():
+    title_local = "<br/>当前区县：<span style='color:%s;font-size:24px;font-weight:bold;'> %s </span> - 追踪事件：%d件" % (
+    UN_TITLE_YELLOW, gov_name.split('|')[-1], DF_EVENTS_BASIC[DF_EVENTS_BASIC["gov_name"] == gov_name].shape[0])
+
+    # 判断本县预警情况
+    if gov_name in df_trace_group["name"].tolist():
+        warning_type = df_trace_group[df_trace_group["name"] == gov_name]["column_type"].values[0]
+        title_local += "；%s事件预警中。" % scopes_dict[warning_type] if warning_type != "追" else "；隐患尚在追踪，未达预警门限。"
+    else:
+        title_local += "；暂未监测到%s事件。" % event_type
+
+    # 还会有全国一件事儿都不发生的情况吗？！NAIVE ┓( ´∀` )┏ —— 为了严谨！！！
+    if len(warning_map_data_list) > 0:
+        warning_map_data_list[0]["title"] += title_local
 
     return warning_map_data_list, warning_map_data_name_list
 
@@ -433,8 +618,14 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
     # index_cols = ['weibo_value', 'trace_v', 'trace_a']
     # index_names = ['事件影响力指数', '事件传播速度', '事件传播加速度']
     index_cols = ['weibo_value']
-    index_names = ['事件影响力指数']
+    index_names = ['实际事态发展']
     for events_head_id in EVENTS_HEAD_IDS:
+
+        # debug
+        if 0:
+            if events_head_id != 'ca79491202e53bfd6ac4347d945623a9':
+                continue
+
         df_event = df_warning_trace_info.loc[df_warning_trace_info['events_head_id'] == events_head_id, :].reset_index(drop=True)
         df_event.loc[:, 'do_time'] = df_event.loc[:, 'do_time'].apply(lambda x: str(x).split('.')[0])
         df_event = df_event.sort_values(by=['do_time']).reset_index(drop=True)  # , inplace=True
@@ -443,8 +634,12 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
             if index_col != 'weibo_value':
                 continue
             if record_now:
-                title = "%s: %s变化趋势" % (
-                GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)], index_names[index_cols.index(index_col)])
+                # title = "%s: %s变化趋势" % (
+                # GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)], index_names[index_cols.index(index_col)])
+
+                title = "%s: 事态发展趋势" % (
+                    GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)])
+
                 subtitle = "更新时间：%s" % str(version_date).split('.')[0]
             else:
                 title = "%s: %s历史走势" % (
@@ -455,81 +650,380 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
 
             x_name_list = []
             event_index_list = []
-            # 影响力指数标出交点
-            for i in df_event.index:
-                value = df_event.loc[i, index_col]
-                x_time = df_event.loc[i, 'do_time']
 
-                # 首先判断第一个点 —— 事件爆发点
-                if i == df_event.index.min():
-                    point_dict = {"y":value, "name":"事件爆发"}
-                    event_index_list.append(str(point_dict))
-                    x_name_list.append(x_time)
-                    continue
+            x_prelist = df_event['do_time'].tolist()
+            index_prelist = df_event[index_col].tolist()
 
-                # 先判断每个点自己在不在界限上
-                if value in thds:
-                    point_dict = {"y":value, "name":thd_names[thds.index(value)]}
-                    event_index_list.append(str(point_dict))
+            # 采样周期大于5才补
+            if len(x_prelist) >= fitting_min_cnts:
+                index_prelist[0] = 0
+
+                event_trace_data = [x_prelist, index_prelist]
+                warning_threshold_data = [a_thd, b_thd, c_thd]
+
+                warning_predict = []
+
+                # 判断有没有预警 —— 取最近那级预警
+                if df_event.iloc[-1,:]["warning_c"] > 0:
+                    warning_predict = [df_event.iloc[-1,:]["warning_c"], c_thd]
+                if df_event.iloc[-1,:]["warning_b"] > 0:
+                    warning_predict = [df_event.iloc[-1,:]["warning_b"], b_thd]
+                if df_event.iloc[-1,:]["warning_a"] > 0:
+                    warning_predict = [df_event.iloc[-1,:]["warning_a"], a_thd]
+
+                if not len(warning_predict):
+                    warning_predict = None
+
+                fit_results = lineFitting.get_trace_event_all_line(event_trace_data, warning_threshold_data, warning_predict)
+
+                thds_fit = [fit_results["classic_A_line"][1][0], fit_results["classic_B_line"][1][0], fit_results["classic_C_line"][1][0]]
+                x_name_list = deepcopy(fit_results["classic_A_line"][0])
+
+                event_xes_fit = deepcopy(fit_results["event_line"][0])
+                event_indexes_fit = deepcopy(fit_results["event_line"][1])
+
+                event_xes_with_points = []
+                event_indexes_with_points = []
+
+                # for i in range(len(event_indexes_fit)):
+                #     value = event_indexes_fit[i]
+                #     x_time = event_xes_fit[i]
+                #
+                #     if i == 0:
+                #         point_dict = str({"y":value, "name":"事件爆发"})
+                #         event_indexes_with_points.append(point_dict)
+                #         event_xes_with_points.append(x_time)
+                #
+                #     # 判断每个点在不在界限上
+                #     if value in thds_fit:
+                #         point_dict = str({"y":value, "name":thd_names[thds_fit.index(value)]})
+
+                event_index_list = fit_results["event_line"][1] + ["null"]*len(list(set(x_name_list)-set(fit_results["event_line"][0])))
+
+                # 事件影响力指数曲线标点
+                df_id = pd.DataFrame({'x_name': x_name_list, 'event': event_index_list})
+
+                if fit_results["warning_line"][1] is not None:
+                    if len(fit_results["warning_line"][0]) >= len(fit_results["cooldown_line"][0]):
+                        warning_list = ["null"] * len(list(set(x_name_list)-set(fit_results["warning_line"][0]))) + list(fit_results["warning_line"][1])
+
+                        noncool_x = list(set(x_name_list)-set(fit_results["cooldown_line"][0]))
+                        noncool_x.sort()
+                        noncool_x = np.array(noncool_x)
+
+                        cooldown_list = ["null"] * len(noncool_x[noncool_x <= fit_results["cooldown_line"][0][0]]) + list(fit_results["cooldown_line"][1]) + ["null"] * len(noncool_x[noncool_x >= fit_results["cooldown_line"][0][-1]])
+
+                    else:
+                        cooldown_list = ["null"] * len(list(set(x_name_list)-set(fit_results["cooldown_line"][0]))) + list(fit_results["cooldown_line"][1])
+
+                        nonwarn_x = list(set(x_name_list)-set(fit_results["warning_line"][0]))
+                        nonwarn_x.sort()
+                        nonwarn_x = np.array(nonwarn_x)
+
+                        warning_list = ["null"] * len(
+                            nonwarn_x[nonwarn_x <= fit_results["warning_line"][0][0]]) + list(
+                            fit_results["warning_line"][1]) + ["null"] * len(
+                            nonwarn_x[nonwarn_x >= fit_results["warning_line"][0][-1]])
+
+                    # print(events_head_id)
+                    df_id["cooldown"] = cooldown_list
+                    df_id["warning"] = warning_list
+
                 else:
-                    event_index_list.append(value)
-                x_name_list.append(x_time)
+                    cooldown_list = ["null"] * len(
+                        list(set(x_name_list) - set(fit_results["cooldown_line"][0]))) + list(
+                        fit_results["cooldown_line"][1])
+                    df_id["cooldown"] = cooldown_list
+                # a, b, c 由拟合后返回
+                df_id['A'] = fit_results["classic_A_line"][1]
+                df_id['B'] = fit_results["classic_B_line"][1]
+                df_id['C'] = fit_results["classic_C_line"][1]
 
-                # 再判断两点之间有没有点在界线上
-                if i == df_event.index.max():
-                    break
-                next_value = df_event.loc[i+1, index_col]
-                next_time = df_event.loc[i+1, 'do_time']
-                if value >= next_value:
-                    continue
-                this_datetime = datetime.strptime(x_time, '%Y-%m-%d %H:%M:%S')
-                next_datetime = datetime.strptime(next_time, '%Y-%m-%d %H:%M:%S')
-                interseconds = (next_datetime - this_datetime).days*24*3600 + (next_datetime - this_datetime).seconds
-                for t in thds:
-                    if value < t < next_value:
-                        point_dict = {"y":t, "name":thd_names[thds.index(t)]}
+                signlist = [event_index_list[0], fit_results["classic_A_line"][1][0], fit_results["classic_B_line"][1][0], fit_results["classic_C_line"][1][0]]
+
+                value_max = max(fit_results["event_line"][1])
+                max_thd = max([value_max + 10, fit_results["classic_C_line"][1][0] + fit_results["classic_A_line"][1][0]])
+
+                tickx = int(df_id.shape[0] / show_x_nums)
+
+            else:
+                # 影响力指数标出交点
+                for i in df_event.index:
+                    value = df_event.loc[i, index_col]
+                    x_time = df_event.loc[i, 'do_time']
+
+                    # 首先判断第一个点 —— 事件爆发点
+                    if i == df_event.index.min():
+                        point_dict = {"y":value, "name":"事件爆发"}
                         event_index_list.append(str(point_dict))
-                        # 计算一下时间，把x_name补上 —— 不要指望前端。。。2018/8/22
-                        cross_seconds = (t-value)/(next_value-value)*interseconds
-                        cross_x_time = this_datetime + timedelta(seconds=cross_seconds)
-                        x_name_list.append(str(cross_x_time).split('.')[0])
-            # df_id = pd.DataFrame(index=df_event.index, columns=['x_name', 'event'])
-            # df_id['x_name'] = x_name_list
-            # df_id['event'] = event_index_list
-            df_id = pd.DataFrame({'x_name':x_name_list, 'event': event_index_list})
+                        x_name_list.append(x_time)
+                        continue
 
-            if index_col == 'weibo_value':
-                # df_id['A'] = [a_thd]*len(list(df_event['do_time']))
-                # df_id['B'] = [b_thd]*len(list(df_event['do_time']))
-                # df_id['C'] = [c_thd]*len(list(df_event['do_time']))
+                    # 先判断每个点自己在不在界限上
+                    if value in thds:
+                        point_dict = {"y":value, "name":thd_names[thds.index(value)]}
+                        event_index_list.append(str(point_dict))
+                    else:
+                        event_index_list.append(value)
+                    x_name_list.append(x_time)
+
+                    # 再判断两点之间有没有点在界线上
+                    if i == df_event.index.max():
+                        break
+                    next_value = df_event.loc[i+1, index_col]
+                    next_time = df_event.loc[i+1, 'do_time']
+                    if value >= next_value:
+                        continue
+                    this_datetime = datetime.strptime(x_time, '%Y-%m-%d %H:%M:%S')
+                    next_datetime = datetime.strptime(next_time, '%Y-%m-%d %H:%M:%S')
+                    interseconds = (next_datetime - this_datetime).days*24*3600 + (next_datetime - this_datetime).seconds
+                    for t in thds:
+                        if value < t < next_value:
+                            point_dict = {"y":t, "name":thd_names[thds.index(t)]}
+                            event_index_list.append(str(point_dict))
+                            # 计算一下时间，把x_name补上 —— 不要指望前端。。。2018/8/22
+                            cross_seconds = (t-value)/(next_value-value)*interseconds
+                            cross_x_time = this_datetime + timedelta(seconds=cross_seconds)
+                            x_name_list.append(str(cross_x_time).split('.')[0])
+                # df_id = pd.DataFrame(index=df_event.index, columns=['x_name', 'event'])
+                # df_id['x_name'] = x_name_list
+                # df_id['event'] = event_index_list
+                df_id = pd.DataFrame({'x_name':x_name_list, 'event': event_index_list})
+
                 df_id['A'] = [a_thd] * len(x_name_list)
                 df_id['B'] = [b_thd] * len(x_name_list)
                 df_id['C'] = [c_thd] * len(x_name_list)
+
+                signlist = [df_event[index_col][0], a_thd, b_thd, c_thd]
+
+                value_max = df_event[index_col].max()
+                max_thd = max([value_max + 10, c_thd + a_thd])
+                tickx = None
+
+            # if index_col == 'weibo_value':
+                # df_id['A'] = [a_thd]*len(list(df_event['do_time']))
+                # df_id['B'] = [b_thd]*len(list(df_event['do_time']))
+                # df_id['C'] = [c_thd]*len(list(df_event['do_time']))
+
             df_info = pd.DataFrame(index=[i for i in list(df_id) if i != 'x_name'], columns=["name", "color"])
-            df_info.loc["event", "name"] = index_names[index_cols.index(index_col)]
+            df_info.loc["event", "name"] = "<span style='font-size:16px;color:%s;'>"%FT_PURE_WHITE + index_names[index_cols.index(index_col)] + "</span>"
             df_info.loc["event", "color"] = BT_TIFFANY_BLUE
+            if "cooldown" in list(df_id):
+                df_info.loc["cooldown", "name"] = "<span style='font-size:16px;color:%s;'>事态自然冷却</span>"%FT_PURE_WHITE      # "事件热度冷却曲线"
+                if "warning" in list(df_id):
+                    df_info.loc["cooldown", "name"] = "<span style='font-size:16px;color:%s;'>预测妥善处理后发展</span>"%FT_PURE_WHITE
+                df_info.loc["cooldown", "color"] = BT_TIFFANY_BLUE                          # BT_TIFFANY_BLUE
+                df_info.loc["cooldown", "type"] = "spline"
+                df_info.loc["cooldown", "dashStyle"] = "dash"
+            if "warning" in list(df_id):
+                df_info.loc["warning", "name"] = "<span style='font-size:16px;color:%s;'>预警事态发展</span>"%FT_PURE_WHITE               # "事件预警曲线"
+                df_info.loc["warning", "color"] = LN_WARNING_PINK
+                df_info.loc["warning", "type"] = "spline"
+                df_info.loc["warning", "dashStyle"] = "dash"
             if index_col == "weibo_value":
                 df_info.loc["event", "color"] = BT_TIFFANY_BLUE
                 df_info.loc["event", "type"] = "line"
                 df_info.loc["event", "dashStyle"] = "solid"
                 for index in df_info.index.values:
-                    if index != "event":
-                        df_info.loc[index, "name"] = index+"级预警"
+                    if index in ["A", "B", "C"]:
+                        df_info.loc[index, "name"] = "<span style='font-size:16px;color:%s;'>"%FT_PURE_WHITE + index+"级预警" +"</span>"
                         df_info.loc[index, "color"] = WCOLORS[index]
                         df_info.loc[index, "type"] = "spline"
                         df_info.loc[index, "dashStyle"] = "dash"
-            y_name = index_names[index_cols.index(index_col)]
+            y_name = "<span style='font-size:16px;color:%s;'>事件扩散影响指数</span>"%FT_PURE_WHITE
             linewidth = 3
-            xfont = {"xfont":10, "fontWeight":"normal", "color":FT_PURE_WHITE}
+            xfont = {"xfont":12, "fontWeight":"normal", "color":FT_PURE_WHITE}
             signname = ['A级', 'B级', 'C级']
-            signlist = [df_event[index_col][0], a_thd, b_thd, c_thd]
-            value_max = df_event[index_col].max()
-            max_thd = max([value_max+10, c_thd+a_thd])
-            index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont, signname=signname, signlist=signlist, max_thd=max_thd)
+            # signlist = [df_event[index_col][0], a_thd, b_thd, c_thd]
+            # value_max = df_event[index_col].max()
+            # max_thd = max([value_max+10, c_thd+a_thd])
+            index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont, signname=signname, signlist=signlist, max_thd=max_thd, tickx=tickx)
             # index_line_dict = get_mixed_line_dict(title, subtitle, df_id, tips=tips)
             warning_line_data_list.append(index_line_dict)
             warning_line_data_name_list.append('%s_%s_index_trend' % (EVENTS_SHORT_DICT[events_head_id], index_col.split('_')[-1]))
     return warning_line_data_list, warning_line_data_name_list
+
+
+# 各事件的微博和评论textbox
+def get_content_comments_textbox():
+    warning_content_textbox_list = []
+    warning_content_textbox_name_list = []
+
+    for events_head_id in EVENTS_HEAD_IDS:
+        # 微博内容
+        # df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
+
+        # 直接从基本信息里取
+        df_event = DF_EVENTS_BASIC[DF_EVENTS_BASIC.events_head_id == events_head_id]
+        DETAILDESC = ""  # 语音播报
+        # weibo_max_len = max([len(x) for x in df_event["content"].tolist()])
+        # if weibo_max_len == 0:
+        #     weibo_content = "暂无详情。"
+        # else:
+        #     weibo_content = df_event[df_event["content"].apply(lambda x:len(x)==weibo_max_len)]["content"].values[0]
+
+        # 事件
+        # title = "%s：事件及评论详情"%GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)]
+        title = ""
+        subtitle = ""
+        # search_key = df_warning_trace_info[df_warning_trace_info["events_head_id"]==events_head_id]["search_key"].values[0]
+        # search_key = "<span style='color:%s'>%s</span>"%(UN_TITLE_YELLOW, ' '.join(search_key.split(' ')[1:]))
+        # earliest_pub_time = str(df_event["pub_time"].min()).split('.')[0]
+        event_toptitle = "事件详情"
+        event_toplist = ["关键字：<span style='color:%s'>%s</span>"%(UN_TITLE_YELLOW, df_event["events_keytitle"].values[0]), "首发时间：%s&nbsp&nbsp&nbsp&nbsp首发博主：%s"%(df_event["events_occur_time"].values[0],df_event["events_first_post"].values[0]), "事件详情：%s"%df_event["events_content"].values[0]]
+
+        df_fieldset = pd.DataFrame({"text-align":["left"], "scroll":[0], "height":["45%"], "top_title":[event_toptitle], "content_list":[str(event_toplist)]})
+
+        # first_textbox = web_charts.get_textbox_dict(title, subtitle, event_toptitle, event_toplist)
+
+        # 评论
+        df_comments = df_warning_weibo_comments[df_warning_weibo_comments.events_head_id==events_head_id]
+        comments_list = []
+        for comment_info in df_comments["comments_shown"]:
+            if len(comment_info) == 0:
+                continue
+            for comment in comment_info:
+                comments_list.append(comment)
+
+        if len(comments_list) == 0:
+            comments_list = ["暂无。"]
+            comment_toplist = comments_list
+        else:
+            comments_list = list(set(comments_list))
+            if len(comments_list) > SHOW_COMMENTS_LIMIT:
+                comments_list = comments_list[0:SHOW_COMMENTS_LIMIT]
+            comment_toplist = ["<%d> %s" % (i + 1, comments_list[i]) for i in range(len(comments_list))]
+
+        comment_toptitle = "典型评论"
+
+        if len(comment_toplist) < fixed_comments_num:
+            df_fieldset = df_fieldset.append(pd.DataFrame(
+                {"text-align": ["left"], "scroll": [0], "height": ["45%"], "top_title": [comment_toptitle],
+                 "content_list": [str(comment_toplist)]}))
+        else:
+            df_fieldset = df_fieldset.append(pd.DataFrame({"text-align":["left"], "scroll":[1], "height":["45%"], "top_title":[comment_toptitle], "content_list":[str(comment_toplist)]}))
+
+        content_textbox = web_charts.get_textbox2_dict(title, subtitle, df_fieldset)
+
+        # next_textbox = web_charts.get_textbox_dict(title, subtitle, comment_toptitle, comment_toplist)
+
+        ## 揉成一页
+        # first_textbox["detail"]["top"] += next_textbox["detail"]["top"]
+
+        warning_content_textbox_list.append(content_textbox)
+        warning_content_textbox_name_list.append("%s_content_textbox"%EVENTS_SHORT_DICT[events_head_id])
+
+    return warning_content_textbox_list, warning_content_textbox_name_list
+
+
+# 媒体占比分布饼状图
+def get_top_media_stackbar(version_date):
+    warning_media_stackbar_list = []
+    warning_media_stackbar_name_list = []
+
+    for events_head_id in EVENTS_HEAD_IDS:
+        gov_name = GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)]
+        event_search_key = ' '.join(df_warning_trace_info[df_warning_trace_info.events_head_id == events_head_id]["search_key"].values[0].split(' ')[1:8])
+
+        df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
+
+        # 聚合同一postname
+        df_event = df_event.groupby(["post_name"]).agg({"event_participation":"sum", "events_head_id":"max", "followers_count":"max"}).reset_index()
+
+        df_event = df_event.sort_values(by=["event_participation"], ascending=False).reset_index(drop=True)
+
+        if df_event.shape[0] > max_medias_num:
+            df_event = df_event[0:max_medias_num]
+
+        # 万人次
+        df_event["event_participation"] /= 19
+
+        df_event["event_participation"] = df_event["event_participation"].apply(lambda x:float("%.2f"%x))
+
+        # title = "%s：[%s] 事件意见领袖TOP%d"%(gov_name.split('|')[-1], event_search_key, int(df_event.shape[0]))
+
+        title = "<span style='color:%s;font-size:30px;font-weight:bold'>本事件主力传播媒体</span>"%UN_TITLE_YELLOW
+        # subtitle = "更新时间：%s"%str(version_date).split('.')[0]
+        subtitle = ""
+        xAxis_name = df_event["post_name"].tolist()
+        yAxis_dict = {"name":"", "color":FT_PURE_WHITE, "fontsize":16}
+        df_data = pd.DataFrame({"data": [str(df_event["event_participation"].tolist())], "name":["意见传播覆盖人次（万）"], "color":[BAR_PINK]})
+
+        media_stackbar_dict = web_charts.get_stackbar_dict(title, subtitle, xAxis_name, yAxis_dict, df_data, percentage=False)
+
+        warning_media_stackbar_list.append(media_stackbar_dict)
+        warning_media_stackbar_name_list.append("%s_media_stackbar"%EVENTS_SHORT_DICT[events_head_id])
+
+    return warning_media_stackbar_list, warning_media_stackbar_name_list
+
+
+# 民众评价关键词textbox图
+def get_public_keywords_textbox(version_date):
+    warning_keywords_textbox_list = []
+    warning_keywords_textbox_name_list = []
+
+    word_types = ["sensitive", "department", "guanzhi"]
+    word_names = ["相关敏感词", "涉及部门", "涉及官员"]
+
+    for events_head_id in EVENTS_HEAD_IDS:
+        event_search_key = ' '.join(
+            df_warning_trace_info[df_warning_trace_info.events_head_id == events_head_id]["search_key"].values[0].split(
+                ' ')[1:8])
+        words_dict = {}
+
+        gov_name = GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)]
+        for word_type in word_types:
+            df_event = df_warning_keywords[(df_warning_keywords.events_head_id == events_head_id) & (df_warning_keywords.type == word_type)]
+            df_event = df_event.sort_values(by=['freq'], ascending=False).reset_index(drop=True)
+
+            if df_event.shape[0] > max_key_words_num:
+                df_event = df_event[0:max_key_words_num]
+                freq_total = sum(list(df_event['freq']))
+                df_event['freq'] = df_event['freq'].apply(lambda x:round(x/freq_total, 4))
+
+            words_list = []
+            for index, row in df_event.iterrows():
+                word_str = "%s（%.2f%%）"%(row["word"], row["freq"] * 100)
+                words_list.append(word_str)
+
+            words_dict[word_type] = words_list
+
+        # title = "%s：[%s] 事件评价关键词"%(gov_name.split('|')[-1], event_search_key)
+
+        title = ""
+
+        subtitle = ""
+
+        toptitle = "民意高频词"
+
+        toplist = []
+
+        # df_event_trace = df_warning_trace_info[df_warning_trace_info.events_head_id == events_head_id].reset_index(drop=True)
+        # latest_weibo_value = df_event_trace[df_event_trace.do_time == df_event_trace["do_time"].max()]["weibo_value"].values[0]
+
+        # first_desc = "当前事件，传播覆盖人次达：%s"%(get_proper_unit_data(latest_weibo_value/0.0019))
+
+        # toplist.append(first_desc)
+
+        toplist.append("")
+
+        toplist.append("".join(["<span style='width:33%%;display:block;float:left;font-weight:bold;color:%s'>"%UN_TITLE_YELLOW +x+"</span>" for x in word_names]))
+
+        max_len = max([len(words_dict[i]) for i in words_dict.keys()])
+
+        for j in range(0, max_len):
+            row_str = "".join(["<span style='width:33%;display:block;float:left'>"+words_dict[i][j] + "</span>" if len(words_dict[i])>j else "<span style='width:33%;display:block;float:left'>" + "&nbsp" + "</span>" for i in words_dict.keys()])
+            toplist.append(row_str)
+
+        df_id = pd.DataFrame({"text-align":["left"], "height":["58%"],"scroll":[0], "top_title":[toptitle], "content_list":[str(toplist)]})
+
+        # keywords_textbox = web_charts.get_textbox_dict(title, subtitle, toptitle, toplist, div=True)
+        keywords_textbox = web_charts.get_textbox2_dict(title, subtitle, df_id)
+
+        warning_keywords_textbox_list.append(keywords_textbox)
+        warning_keywords_textbox_name_list.append("%s_public_textbox"%EVENTS_SHORT_DICT[events_head_id])
+
+    return warning_keywords_textbox_list, warning_keywords_textbox_name_list
 
 
 # 关键词占比
@@ -573,26 +1067,8 @@ def get_warning_bloggers_lines_data(df_warning_details, df_warning_trace_info, p
     ws = para_dict["K_share"]
     # 事件参与度
     df_details_temp = deepcopy(df_warning_details)
-
-    # print('yes', flush=True)
-    # print("count_comment: ", type(df_details_temp["count_comment"]), flush=True)
-    # print("count_read: ", type(df_details_temp["count_read"]), flush=True)
-    # print("count_share: ", type(df_details_temp["count_share"]), flush=True)
-    # print(df_details_temp["count_comment"])
-    # print(df_details_temp["count_read"])
-    # print(df_details_temp["count_share"])
-    # print(df_warning_details.info())
-    # print(df_details_temp.info())
-    #
-    # df_details_temp = df_details_temp.convert_objects(convert_numeric=True)
-    # print(df_details_temp.info())
-
     df_details_temp["event_participation"] = w0 * 1 + wr * df_details_temp["count_read"] + wc * \
                                                 df_details_temp["count_comment"] + ws * df_details_temp["count_share"]
-
-    # print('yes1', flush=True)
-
-
     # 博主影响力
     df_details_temp["publisher_impact"] = df_details_temp["followers_count"]
     for events_head_id in EVENTS_HEAD_IDS:
@@ -675,18 +1151,32 @@ def get_warning_map_line_basic_data(gov_code, node_code, df_warning_trace_info, 
         warning_line_data_list.extend(warning_indexes_data)
         warning_line_data_name_list.extend(warning_indexes_names_list)
 
+        # 事件详情textbox图
+        warning_content_data, warning_content_names = get_content_comments_textbox()
+        warning_line_data_list.extend(warning_content_data)
+        warning_line_data_name_list.extend(warning_content_names)
+
+        # 媒体事件参与度分布stackbar图
+        warning_media_data, warning_media_names = get_top_media_stackbar(monitor_time)
+        warning_line_data_list.extend(warning_media_data)
+        warning_line_data_name_list.extend(warning_media_names)
+
+        # 事件关键词textbox图
+        warning_keywords_data, warning_keywords_names = get_public_keywords_textbox(monitor_time)
+        warning_line_data_list.extend(warning_keywords_data)
+        warning_line_data_name_list.extend(warning_keywords_names)
+
         # # 事件关键词 —— 官职、敏感词、部门，最多20个  —— 2018/8/2 不需要关键词的图了，转换成list_desc的文本形式
         # warning_words_data, warning_words_names_list = get_warning_words_lines_data(df_warning_keywords, nearest_trace_time)
         # warning_line_data_list.extend(warning_words_data)
         # warning_line_data_name_list.extend(warning_words_names_list)
 
-        # 博主影响力&事件参与度 —— 参与度最高的前二十个博主
-        para_dict = warning_dict[node_code]["parameters"]
-        warning_bloggers_data, warning_bloggers_names_list = get_warning_bloggers_lines_data(df_warning_details,
-                                                                                             df_warning_trace_info,
-                                                                                             para_dict, monitor_time, record_now)
-        warning_line_data_list.extend(warning_bloggers_data)
-        warning_line_data_name_list.extend(warning_bloggers_names_list)
+        # 博主影响力&事件参与度 —— 参与度最高的前二十个博主 —— 2018/11/28 先不生成
+        # warning_bloggers_data, warning_bloggers_names_list = get_warning_bloggers_lines_data(df_warning_details,
+        #                                                                                      df_warning_trace_info,
+        #                                                                                      parameters, monitor_time, record_now)
+        # warning_line_data_list.extend(warning_bloggers_data)
+        # warning_line_data_name_list.extend(warning_bloggers_names_list)
     # print(warning_map_data_name_list)
     # print(warning_map_data_name_list)
     # print(warning_line_data_name_list)
@@ -804,6 +1294,11 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     gov_code_str = str(gov_code)[0:6]
     gov_name = df_2861_county.loc[gov_code, 'full_name']
     event_type = warning_dict[node_code]["events_model"]
+    warning_cover_dict = {}
+    warning_cover_dict["title"] = ""
+    warning_cover_dict["subtitle"] = ""
+    warning_cover_dict["type"] = "warningCover"
+
     warning_cover = {}
     # 历史事件 —— 环境暂时没有
     if node_code == "STABLE_WARNING":
@@ -812,14 +1307,16 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
         warning_cover["up_button"] = []
     events_grades = ["全国级", "省域级", "区域级"]
     events_engs = ['C级', 'B级', 'A级']
-    warning_cover["down_button"] = []
-    for i in range(len(events_grades)):
-        grade_button = {"text":events_grades[i], "link":"%s/%s/setting_%s"%(node_code, gov_code_str, events_engs[i][0])}
-        warning_cover["down_button"].append(grade_button)
+
+    # 去掉down_button
+    # warning_cover["down_button"] = []
+    # for i in range(len(events_grades)):
+    #     grade_button = {"text":events_grades[i], "link":"%s/%s/setting_%s"%(node_code, gov_code_str, events_engs[i][0])}
+    #     warning_cover["down_button"].append(grade_button)
 
     # 追踪中
-    trace_button = {"text":"追踪中", "link":"%s/%s/setting"%(node_code, gov_code_str)}
-    warning_cover["down_button"].append(trace_button)
+    trace_button = {"text":"追踪中", "link":"%s/%s/setting"%(node_code, gov_code_str)}     # #dataWarningCover:
+    # warning_cover["down_button"].append(trace_button)
 
     # 传多少个扫描单元
     warning_cover["unit_num"] = 4
@@ -910,7 +1407,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
                 extent_word = row["scope_grade"]
             else:
                 extent_word = row["scope_grade"]+"级"
-            current_col = {"text":"%s事件:<br/>%s<br/>约%s人次在互联网上参与讨论。(事件预测准确率：75%%)"%(extent_word, row["events_content"], get_proper_unit_data(row["newly_weibo_value"]*526.32)), "link":"%s"%(row["events_link"])}
+            current_col = {"text":"%s事件:<br/>%s<br/>约%s人次在互联网上参与讨论。(事件预测准确率：75%%)"%(extent_word, (str(row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT]+"……" if not str(row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT].endswith("。") else str(row["events_content"])[0:SHOW_WEIBO_WORDS_LIMIT]), get_proper_unit_data(row["newly_weibo_value"]*526.32)), "link":"%s"%(row["events_link"])}   # #dataWarningCover:
             unit4_cols.append(current_col)
 
     # current_col3 = {"text":"全国范围内当前追踪[%s]相关事件：共%d件"%(event_type,country_num)}
@@ -928,7 +1425,7 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     current_col8 = {"text":"隐患信息：全国新增隐患小事%s件；本县新增%s件"%(info_dict["past_week"]["trifles_num"], county_trifle_aug)}
     current_col9 = {"text":"热点事件：系统新增追踪%s件；本县追踪%s件"%(info_dict["past_week"]["events_num"], county_event_aug)}
 
-    current_col10 = {"text":"<span style='color:%s'>追踪引擎：过去一周，系统新增追踪%s件 [累计%s件]；%s - 追踪%s件 [累计%s件]<br/>隐患引擎：全国新增隐患小事%s件 [累计%s件]；%s - 新增%s件 [累计%s件]<br/>爬虫引擎：系统新增互联网信息%s条 [累计：%s条]；%s - 新增%s条 [累计%s条]</span>"%(FT_PURE_WHITE, info_dict["past_week"]["events_num"], info_dict["total"]["events_num"], gov_name.split('|')[-1], county_event_aug, county_event_all, info_dict["past_week"]["trifles_num"], info_dict["total"]["trifles_num"], gov_name.split('|')[-1], county_trifle_aug, county_trifle_all, info_dict["past_week"]["sys_info"],info_dict["total"]["sys_info"], gov_name.split('|')[-1], county_info_aug, county_info_all)}
+    current_col10 = {"text":"<span style='color:%s'>追踪引擎：过去一周，系统新增追踪%s件 [累计%s件]；%s - 追踪%s件 [累计%s件]<br/>隐患引擎：全国新增隐患小事%s件 [累计%s件]；%s - 新增%s件 [累计%s件]<br/>采集引擎：系统新增互联网信息%s条 [累计：%s条]；%s - 新增%s条 [累计%s条]</span>"%(FT_PURE_WHITE, info_dict["past_week"]["events_num"], info_dict["total"]["events_num"], gov_name.split('|')[-1], county_event_aug, county_event_all, info_dict["past_week"]["trifles_num"], info_dict["total"]["trifles_num"], gov_name.split('|')[-1], county_trifle_aug, county_trifle_all, info_dict["past_week"]["sys_info"],info_dict["total"]["sys_info"], gov_name.split('|')[-1], county_info_aug, county_info_all)}
 
     # unit4_cols.extend([current_col7, current_col8, current_col9])
     unit4_cols.append(current_col10)
@@ -940,11 +1437,13 @@ def get_warning_cover_data(gov_code, node_code, monitor_time, info_dict, record_
     warning_cover["unit_details"] = unit_details
     warning_cover["final_desc"] = [{"cols":[{"text":"2861%s监测系统-%s<br/>"%(event_type, gov_name)}]},{"cols":[{"text":"%s - 本县追踪事件%s件，本省%s件，全国共%s件"%(monitor_time, county_num, prov_num, country_num)}]}]
 
-    return warning_cover
+    warning_cover_dict["detail"] = warning_cover
+
+    return warning_cover_dict
 
 
 # 预警前端
-def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now=True):
+def get_warning_setting_desc_data(gov_code, node_code, warning_map_data_name_list, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now=True):
     """
 
     :type node_code: object
@@ -953,15 +1452,12 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     warning_type = warning_dict[node_code]["events_model"]
     para_dict = warning_dict[node_code]["parameters"]
 
-    # 柱子地图
-    warning_map_data_list = []
-    warning_map_data_name_list = []
-
     # 多setting
     setting_list = []
     setting_name_list = []
 
     # 右侧描述
+    global list_desc
     list_desc = {}
 
     # 按事件提取
@@ -1008,103 +1504,25 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     nearest_trace_time = str(max(df_warning_trace_info['do_time'].tolist())).split('.')[0]
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
 
-    # 生成一张本县的预警情况图  —— 2018/8/20 本地的图不用了
+    # 首页是warning_cover —— 2018/11/26 改
+    setting_cover = {"title":"本区县预警监测", "datas":[{"id":"cover", "node_code":node_code, "data":gov_code_str+'/'+"warning_cover", "name":"本区县预警"}]}
+    setting_list.append(setting_cover)
+    setting_name_list.append("setting")
 
     # current_time = time.strftime('%Y-%m-%d %H:%M:%S')
     monitor_time_short = datetime.strptime(monitor_time, '%Y-%m-%d %H:%M:%S').strftime('%m-%d %H:%M')
-    if 0:
-        title = "本区县%s预警状况"%warning_type
-        subtitle = "更新时间：%s"%monitor_time
-        if (gov_name_current in GOV_NAMES) and record_now:
-            # ??? 有问题，一个区县多件事儿怎么办？
-            gov_index = GOV_NAMES.index(gov_name_current)
-            gov_value = NEWLY_WEIBO_VALUES[gov_index]
-            thd_grade = THD_GRADES[gov_index]
-            scope_grade = SCOPE_GRADES[gov_index]
-            if thd_grade == "追踪中":
-                thd_grade = 0
-                scope_grade = 0
-            elif thd_grade == "C级":
-                thd_grade = scope_grade = 3
-            elif thd_grade == "B级":
-                thd_grade = scope_grade = 2
-            elif thd_grade == "A级":
-                thd_grade = scope_grade = 1
-            df_id= pd.DataFrame({"value":[thd_grade], "name":gov_name_current, "rank":scope_grade})
-            if THD_GRADES[gov_index] == "追踪中":
-                df_id['column_color'] = FT_SOBER_BLUE
-            else:
-                df_id['column_color'] = color_dict[THD_GRADES[gov_index]]
-
-        else:
-            df_id = pd.DataFrame({"value":[0], "name":gov_name_current,"rank":0})
-            df_id['column_color'] = BG_GREEN
-
-        df_id['column_type'] = "a"
-        tips = {"value":"预警等级", "rank":"事件影响范围"}
-        column_map_local_dict = get_column_map_dict(title, subtitle, df_id, tips=tips, column_names=[gov_name_current])  # , column_names=False
-        warning_map_data_list.append(column_map_local_dict)
-        warning_map_data_name_list.append('warning_column_local_map')
-
-        # settings
-        # column_map的setting， 2018/8/2 改为多个setting —— C/B/A/trace/base
-        # 进入时给本县当前的预警情况地图
-        setting = {}
-        setting["title"] = gov_name_current
-        data_dict = {}
-        data_dict["id"] = "local"
-        data_dict["node_code"] = node_code
-        data_dict["name"] = "本区县%s预警状况" % warning_type
-        data_dict["data"] = gov_code_str + '/' + 'warning_column_local_map'
-        setting["datas"] = [data_dict]
-        setting_list.append(setting)
-        setting_name_list.append('setting')
 
     # 追踪事件 —— 每个区县必须有一个setting，一个list
-    # if gov_code_str == "110101":
-    setting0 = {}
-    data_dict = {}
-    data_dict["id"] = "trace"
-    data_dict["node_code"] = node_code
-    data_dict["data"] = gov_code_str+'/'+'warning_column_trace_map'
-    # 这个数据也可以只生成一份 —— 不可以！！！前端的设计逻辑会根据数据来拼list路径，所以list不同的时候要单独生成数据文件
-    # data_dict["data"] = common_folder_code+'/'+'warning_column_trace_map'
-    setting0["datas"] = [data_dict]
-    if record_now:
-        data_dict["name"] = "2861区县%s隐患-追踪中" % warning_type
-        setting0["title"] = "追踪中事件"
-    else:
-        data_dict["name"] = "2861区县%s隐患-历史追踪事件" % warning_type
-        setting0["title"] = "历史追踪事件"
-    setting_list.append(setting0)
-    # setting_name_list.append('setting_trace')
-    # 所有追踪的事件为首页
-    setting_name_list.append('setting')
+    # 地图排列的setting改动  —— 2018/11/30
+    if 1:
+        for map_name in warning_map_data_name_list:
+            set_id = re.findall(r'warning_column_(.*?)_map', map_name)[0]
+            setting_list.append({"title":"2861预警系统", "datas":[{"id":set_id, "node_code":node_code, "data":gov_code_str+'/'+map_name, "name":"2861预警系统"}]})
 
-    # 神奇的事情发生了。。。首页可以只切setting但list取原有的 —— 2018/8/22 —— 是bug，天博已改 2018/8/23，所以只要有定制化，文件必须从本地取
-    # if gov_code_str == "110101":
-    # C/B/A级预警分布
-    for key in WSTATUSES.keys():
-        grade = WSTATUSES[key]['name']
-        area = WSTATUSES[key]['area']
-        setting1 = {}
-        data_dict = {}
-        data_dict["id"] = grade[0]
-        data_dict["node_code"] = node_code
-        data_dict["data"] = gov_code_str+'/'+'warning_column_%s_map'%grade[0]
-        # data_dict["data"] = '110101' + '/' + 'warning_column_%s_map'%grade[0]
-        if record_now:
-            data_dict["name"] = "2861区县%s隐患-%s预警中" % (warning_type, grade)
-            # setting1["title"] = grade + "预警"
-            setting1["title"] = area + "级事件"
-        else:
-            data_dict["name"] = "2861区县%s隐患-历史%s事件" % (warning_type, grade)
-            # setting1["title"] = grade + "历史事件"
-            setting1["title"] = area + "级历史事件"
-        setting1["datas"] = [data_dict]
+            setting_name_list.append("setting_%s"%set_id)
 
-        setting_list.append(setting1)
-        setting_name_list.append('setting_%s'%grade[0])
+    page_settings = deepcopy(setting_name_list)
+    page_setting_names = deepcopy(setting_list)
 
     # 'we0_value_index_trend'
     # 'we0_sens_word_trend'  —— 2018/8/2 不再生成
@@ -1133,6 +1551,22 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
                 setting2["datas"] = [data_dict]
                 setting_list.append(setting2)
                 setting_name_list.append('setting_%s_%s_indexes'%(EVENTS_SHORT_DICT[events_head_id], i.split('_')[-1]))
+
+            # content的setting
+            setting_list.append({"title":"事件详情", "datas":[{"id":EVENTS_SHORT_DICT[events_head_id]+"cont", "node_code":node_code, "name":"事件详情", "data":common_folder_code+'/'+EVENTS_SHORT_DICT[events_head_id]+'_content_textbox'}]})
+            setting_name_list.append('setting_%s_content'%EVENTS_SHORT_DICT[events_head_id])
+
+            # 媒体的setting
+            setting_list.append({"title": "事件发布媒体", "datas": [
+                {"id": EVENTS_SHORT_DICT[events_head_id] + "media", "node_code": node_code, "name": "事件发布媒体",
+                 "data": common_folder_code + '/' + EVENTS_SHORT_DICT[events_head_id] + '_media_stackbar'}]})
+            setting_name_list.append('setting_%s_media' % EVENTS_SHORT_DICT[events_head_id])
+
+            # 民众评价的关键词的setting
+            setting_list.append({"title": "民众评价关键词", "datas": [
+                {"id": EVENTS_SHORT_DICT[events_head_id] + "public", "node_code": node_code, "name": "民众评价关键词",
+                 "data": common_folder_code + '/' + EVENTS_SHORT_DICT[events_head_id] + '_public_textbox'}]})
+            setting_name_list.append('setting_%s_public' % EVENTS_SHORT_DICT[events_head_id])
 
         # 事件参与度&博主影响力的setting
         for events_head_id in EVENTS_HEAD_IDS:
@@ -1188,6 +1622,11 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     if node_code == "STABLE_WARNING":
         common_data["history_link"] = node_code + '/' + gov_code_str + '/past'
     list_desc["column_title"] = common_data
+
+    # # 加上翻页试试
+    list_desc["page_list"] = {}
+    list_desc["page_list"]["setting_list"] = [node_code + '/' + gov_code_str + '/' + i for i in page_settings]
+    list_desc["page_list"]["global_mode"] = True
 
     # if "past_events" in info_dict.keys():
     if node_code == "STABLE_WARNING":
@@ -1324,431 +1763,421 @@ def get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df
     color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED}
     grades = ["A级", "B级", "C级"]
 
-
-    # C/B/A级的desc, 不重叠 —— 2018/8/22
-    # for i in range(0,3):
-    #     grade = list(color_dict.keys())[i]
-    #     desc_id = grade[0]
-    #     list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%"}
-    #     list_desc_data = deepcopy(list_desc_data1)
-    #     del list_desc_data[-3-i]["cols"][0]["link"]
-    #     list_desc_data[-3 - i]["cols"][0]["text"] = "<section style='text-align:center'>"+list_desc_data[-3-i]["cols"][0]["text"]+"</section>"
-    #     list_desc_data[-3-i]["strong"] = True
-    #     list_desc_data[-3 - i]["color"] = color_dict[grade]
-    #     df_grade = deepcopy(df_events[df_events['value']>=thd_dict[grade]])
-    #     df_grade["rank"] = df_grade["value"].rank(ascending=False)
-    #     df_grade = df_grade.sort_values(by="rank", ascending=True).reset_index(drop=True)
-    #
-    #     list_desc_data.append(null_line)
-    #
-    #     for index, row in df_grade.iterrows():
-    #         event_info = {"cols": [{"text": "第%d名" % row["rank"]}, {"text": row["name"],
-    #                                                                 "link": "#data:setting_%s_value_indexes" %
-    #                                                                         events_short_dict[row["events_id"]]}], "color":color_dict[grade]}
-    #         list_desc_data.append(event_info)
-    #     list_desc[desc_id]["datas"] = list_desc_data
-
-    # 保证A/B/C每个级别的事件不重叠 —— 2018/8/22
-    for i in range(len(grades)):
-        desc_id = grades[i][0]
-
-        # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
-        # list_desc[desc_id] = {"title": "", "sub_title": "", "width": "35%", "desc":MAPDESC}
-
-        list_desc_data = deepcopy(list_desc_data1)
-        del list_desc_data[-2 - i]["cols"][0]["link"]
-        list_desc_data[-2 - i]["cols"][0]["text"] = "<section style='text-align:center'>" + \
-                                                    list_desc_data[-2 - i]["cols"][0]["text"] + "</section>"
-        list_desc_data[-2-i]["strong"] = True
-        list_desc_data[-2 - i]["color"] = color_dict[grades[i]]
-        # if i == len(grades)-1:
-        #     df_grade = deepcopy(df_events[df_events.value>=thd_dict[grades[i]]])
-        # else:
-        #     df_grade = deepcopy(df_events[(df_events.value>=thd_dict[grades[i]])&(df_events.value<thd_dict[grades[i+1]])])
-        # df_grade["rank"] = df_grade["value"].rank(ascending=False)
-        # df_grade = df_grade.sort_values(by="rank", ascending=True).reset_index(drop=True)
-        #
-        # list_desc_data.append(null_line)
-        #
-        # for index, row in df_grade.iterrows():
-        #     event_info = {"cols": [{"text": "第%d名" % row["rank"]}, {"text": row["name"],
-        #                                                             "link": "#data:setting_%s_value_indexes" %
-        #                                                                     events_short_dict[row["events_id"]]}], "color":color_dict[grades[i]]}
-        #     list_desc_data.append(event_info)
-
-        # trace的desc —— 2018/9/27改版， 追踪/A/B/C不配右侧list
-        # list_desc[desc_id]["datas"] = list_desc_data
-
-    # 追踪指数信息对应的list_desc  —— 以下list_desc可以公用 —— 2018/8/15 —— 前端又要改，这个先暂缓
-    # nearest_trace_time = max(df_warning_trace_info['do_time'].tolist())
-    # 空行
-    # if gov_code_str == "110101":
     null_line = {"cols": [{"text": ""}]}
     if gov_code_str == common_folder_code:
         for events_head_id in EVENTS_HEAD_IDS:
+            # 每个事件的翻页按钮
+            pages_button_list = [{"text": "1", "link": "#data:%s/%s/setting_%s_value_indexes" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": "2", "link": "#data:%s/%s/setting_%s_content" % (node_code, gov_code_str,EVENTS_SHORT_DICT[events_head_id])},{"text": "3", "link": "#data:%s/%s/setting_%s_media" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": "4", "link": "#data:%s/%s/setting_%s_public" % (node_code, gov_code_str,EVENTS_SHORT_DICT[events_head_id])}]
             for index_col in index_cols:
                 index_id = EVENTS_SHORT_DICT[events_head_id]+index_col.split('_')[-1]
-                list_desc[index_id] = {"title":"", "sub_title": "", "width": "35%"}
+                list_desc[index_id] = {"title":"", "sub_title": "", "width": events_desc_width}
                 list_desc_data2 = []
+
+                # 2018/12/4 —— 改版
                 # 第一行：标题
-                gov_title = "<h3><section style='text-align:center'>%s</section></h3>" % GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)]
-                gov_info = {"cols": [{"text": gov_title}]}
-                list_desc_data2.append(gov_info)
+                # gov_title = "<h3><section style='text-align:center'>%s</section></h3>" % GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)]
+                # gov_info = {"cols": [{"text": gov_title}]}
+                # list_desc_data2.append(gov_info)
+                #
+                # # 第二/三行：预警详情
+                # df_event = df_warning_trace_info.loc[df_warning_trace_info['events_head_id'] == events_head_id, :].reset_index(
+                #     drop=True)
+                # df_event.loc[:, 'do_time'] = df_event.loc[:, 'do_time'].apply(lambda x: str(x).split('.')[0])
+                # df_event = df_event.sort_values(by=['do_time']).reset_index(drop=True)
+                #
+                # latest_trace = df_event.loc[:, 'do_time'].max()
+                # warn_event_data = ""
+                # earliest_pub_time = str(df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()).split('.')[0]
+                # # earliest_trace_time = df_event.loc[: 'do_time'].min()
+                # county_name = GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)].split('|')[-1]
+                # search_key = ' '.join(df_event["search_key"].values[0].split(' ')[1:])
+                #
+                # # warn_title = "<h3><section style='color: orange; text-align:center'>预警详情</section></h3>"
+                # warn_title_info = {"cols": [{"text": "<section style='text-align:center'>预警详情</section>"}, {"text": "部分信息来源", "link": "#data:%s/%s/setting_%s_publishers" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": "返回首页", "link": "#back:"}], "bg_color":BT_TIFFANY_BLUE, "color":FT_PURE_WHITE, "strong":True}
+                #
+                # # "text": "返回首页", "link": "#data:setting"
+                #
+                # latest_weibo_value = df_event.loc[df_event['do_time'] == latest_trace, 'weibo_value'].values[0]
+                #
+                # warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件网上传播覆盖人次：<span style='color: orange'>%s</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, get_proper_unit_data(latest_weibo_value*526.32))
+                # EVENTDESC = warn_event_data.split('<br/>')[0]
+                # EVENTDESC = tidy_rich_text(EVENTDESC)
+                #
+                # warn_info = {"cols": [{"text": warn_event_data}]}
+                # list_desc_data2.extend([warn_title_info, warn_info, null_line])
+                #
+                # latest_trace_v = df_event.loc[df_event['do_time'] == latest_trace, 'trace_v'].values[0]
+                # latest_trace_a = df_event.loc[df_event['do_time'] == latest_trace, 'trace_a'].values[0]
+                #
+                #
+                # latest_ws = []
+                # for status in WSTATUSES.keys():
+                #     locals()[status] = df_event.loc[df_event['do_time'] == latest_trace, status].values[0]
+                #     latest_ws.append(locals()[status])
+                # # 判断几级事件
+                #
+                # # if latest_wc == 0:
+                # if -2 not in latest_ws:
+                #     current_events_judge = {}
+                #     cant_reach_events_judge = {}
+                #     for i in range(0, len(WSTATUSES)+1):
+                #         if i == 0:
+                #             current_events_judge[i] = ""
+                #             cant_reach_events_judge[i] = ""
+                #         else:
+                #             current_events_judge[i] = list(WSTATUSES.keys())[i-1]
+                #             cant_reach_events_judge[i] = list(WSTATUSES.keys())[len(WSTATUSES)-i]
+                #     need_time_to_reach = {}
+                #     for status in WSTATUSES.keys():
+                #         if locals()[status] > 0:
+                #             need_time_to_reach[status] = locals()[status]
+                #
+                #     # 当前的事件等级
+                #     event_status = current_events_judge[latest_ws.count(0)]
+                #     # 达不到的等级
+                #     cant_reach = cant_reach_events_judge[latest_ws.count(-1)]
+                #     if event_status == '':
+                #         event_info = "事件追踪中。"
+                #         advise_info = "<span style='color: orange'>持续关注，及时应对。</span>"
+                #         already_pass_dict = {}
+                #     else:
+                #         status_info = WSTATUSES[event_status]
+                #         first_warn_time = datetime.strptime(df_event.loc[df_event[event_status] == 0, 'do_time'].min(),
+                #                                             '%Y-%m-%d %H:%M:%S')
+                #         latest_trace_time = datetime.strptime(latest_trace, '%Y-%m-%d %H:%M:%S')
+                #         interdays = (latest_trace_time - first_warn_time).days
+                #         interseconds = (latest_trace_time - first_warn_time).seconds
+                #         warn_interhours = interdays*24 + interseconds/3600
+                #         event_info = "<span style='color: orange'>%s</span>事件，触发%s预警已<span style='color: orange'>%.2f</span>小时，已成为<span style='color: orange'>%s</span>范围内的热点话题。%s"%(status_info['name'], status_info['name'], warn_interhours, status_info['area'], status_info['desc'])
+                #         advise_info = status_info['advise']
+                #         # 已超过的其他门限
+                #         already_pass_dict = {}
+                #         for warning_key in WSTATUSES.keys():
+                #             if warning_key < event_status:
+                #                 first_warning_time = datetime.strptime(df_event.loc[df_event[warning_key]==0, 'do_time'].min(), '%Y-%m-%d %H:%M:%S')
+                #                 other_interdays = (latest_trace_time-first_warning_time).days
+                #                 other_interseconds = (latest_trace_time-first_warning_time).seconds
+                #                 other_warn_interhours = other_interdays*24 + other_interseconds/3600
+                #                 other_event_info = "触发<span style='color: orange'>%s</span>预警已<span style='color: orange'>%.2f</span>小时。影响范围早已超过<span style='color: orange'>%s</span>，现事件影响程度已高于%s事件。<br/>一般而言，%s事件的影响程度为：%s"%(WSTATUSES[warning_key]['name'],other_warn_interhours, WSTATUSES[warning_key]['area'], WSTATUSES[warning_key]['name'], WSTATUSES[warning_key]['name'], WSTATUSES[warning_key]['desc'])
+                #                 already_pass_dict[WSTATUSES[warning_key]['name']] = other_event_info
+                #
+                #     if cant_reach != '':
+                #         cant_reach_dict = {}
+                #         cant_reach_info = WSTATUSES[cant_reach]
+                #         events_grades = ["A级", "B级", "C级"]
+                #         events_scopes = ["区域", "省域", "全国"]
+                #         warning_signs = ['warning_a', 'warning_b', 'warning_c']
+                #         cant_reach_grades = events_grades[events_grades.index(cant_reach_info['name']):]
+                #         for i in cant_reach_grades:
+                #             cant_reach_event_info = "评估本事件当前的传播速度、加速度等，发展为<span style='color: orange'>%s</span>性(%s)事件的概率仅为：<span style='color: orange'>10%%~20%%</span>。<br/>一般而言，%s事件的影响程度为：%s"%(events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
+                #             cant_reach_dict[i] = cant_reach_event_info
+                #
+                #     if len(need_time_to_reach) != 0:
+                #         need_time_list = []
+                #         need_time_dict = {}
+                #         for key in need_time_to_reach.keys():
+                #             need_time_info = WSTATUSES[key]
+                #             need_time_str = "本事件有<span style='color: orange'>80%%~90%%</span>的概率将于<span style='color: orange'>%.2f小时</span>后发展为%s（%s）事件。<br/>一般而言，%s事件的影响程度为：%s"%(need_time_to_reach[key], need_time_info['area'], need_time_info['name'], need_time_info['name'], need_time_info['desc'])
+                #             need_time_list.append(need_time_str)
+                #             need_time_dict[need_time_info['name']] = need_time_str
+                #         need_time_desc = "若放任不管，经评估当前状态，"+''.join(need_time_list)
+                #         # advise_info += need_time_desc
+                #
+                # # 如果是刚开始的几个周期，就根据值来判断当前等级，并给其他两个等级为 —— “刚开始追踪，距离/超过时间尚在计算”
+                # else:
+                #     events_grades = ["A级", "B级", "C级"]
+                #     events_scopes = ["区域", "省域", "全国"]
+                #     warning_signs = ['warning_a', 'warning_b', 'warning_c']
+                #     # 当前事件所处等级
+                #     event_grade = THD_GRADES[EVENTS_HEAD_IDS.index(events_head_id)]
+                #     need_time_to_reach = {}
+                #     already_pass_dict = {}
+                #     cant_reach = "newly_start"
+                #     cant_reach_dict = {}
+                #     # 追踪中
+                #     if event_grade == "追踪中":
+                #         event_status = ''
+                #         event_info = "事件追踪中。"
+                #         advise_info = "<span style='color: orange'>持续关注，及时应对。</span>"
+                #         for i in events_grades:
+                #             cant_reach_dict[i] = "当前处于追踪的前五个采样周期，事件距离<span style='color: orange'>%s</span>性(%s)事件的时间和概率尚在计算中。<br/>一般而言，%s事件的影响程度为：%s"%(events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
+                #     # 已达到其他等级的事件
+                #     else:
+                #         event_status = warning_signs[events_grades.index(event_grade)]
+                #         status_info = WSTATUSES[event_status]
+                #         # first_warn_time = datetime.strptime(df_event.loc[df_event[event_status] == 0, 'do_time'].min(),
+                #         #                                     '%Y-%m-%d %H:%M:%S')
+                #         # latest_trace_time = datetime.strptime(latest_trace, '%Y-%m-%d %H:%M:%S')
+                #         # warn_interval = (latest_trace_time - first_warn_time).seconds
+                #         event_info = "<span style='color: orange'>%s</span>事件，已成为<span style='color: orange'>%s</span>范围内的热点话题。%s" % (status_info['name'], status_info['area'], status_info['desc'])
+                #         advise_info = status_info['advise']
+                #         other_grades = [i for i in events_grades if i != event_grade]
+                #         for i in other_grades:
+                #             cant_reach_dict[i] = "当前处于追踪的前五个采样周期，事件距离<span style='color: orange'>%s</span>性(%s)事件的时间和概率尚在计算中。<br/>一般而言，%s事件的影响程度为：%s" % (events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
+                #
+                # C_warning_button = {
+                #     "cols": [{"text": "全国性（C级）事件", "link": "#list:%s/%s/%sC" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": ""},
+                #              {"text": ""}]}
+                # B_warning_button = {
+                #     "cols": [{"text": "省域性（B级）事件", "link": "#list:%s/%s/%sB" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])},
+                #              {"text": ""}]}
+                # A_warning_button = {
+                #     "cols": [{"text": "区域性（A级）事件", "link": "#list:%s/%s/%sA" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}]}
+                # TRACE_warning_button = {
+                #     "cols": [{"text": "正在追踪的事件", "link": "#list:%s/%s/%strace" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}]}
+                # tri_buttons_list = [C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button]
+                #
+                # thd_desc = ["C级", "B级", "A级", " "]  # 空格表示追踪中，没到三级预警门限
+                # thd_scopes = ["全国", "省域", "区域", " "]  # 空格表示追踪中，没到三级预警门限
+                # thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
+                # color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED, " ": FT_SOBER_BLUE}
+                #
+                # if event_status != '':
+                #     status_grade = WSTATUSES[event_status]['name']
+                #     del tri_buttons_list[-1]
+                #     # grade_type = status_grade[0]
+                # else:
+                #     status_grade = " "
+                #     # grade_type = "trace"
+                # status_index = thd_desc.index(status_grade)
+                # # del tri_buttons_list[status_index]["cols"][0]["link"]
+                # # tri_buttons_list[status_index]["cols"][0]["text"] = "<section style='text-align:center'>"+"本县当前："+tri_buttons_list[status_index]["cols"][0]["text"]+"</section>"
+                # tri_buttons_list[status_index]["strong"] = True
+                # # tri_buttons_list[status_index]["color"] = color_dict[status_grade]
+                # tri_buttons_list[status_index]["cols"][0]["text"] = "<span style='color: %s'>"%(color_dict[status_grade]) + tri_buttons_list[status_index]["cols"][0]["text"] + "</span>"
+                # tri_buttons_list[status_index]["cols"][0]["link"] = "#list:%s/%s/%svalue"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])
+                # # "#data:setting_%s_%s_indexes"%(events_short_dict[events_head_id], index_col.split('_')[-1])
+                # tri_buttons_list[status_index]["cols"][0]["color"] = color_dict[status_grade]
+                # status_desc = "<span style='color: orange'>事件当前状态</span>：%s<br/><span style='color: orange'>系统建议</span>：%s"%(event_info, advise_info)
+                # status_desc_line = {"cols":[{"text":"%s"%status_desc}]}  # , "color":color_dict[status_grade]
+                # tri_buttons_list.insert(status_index+1, status_desc_line)
+                # # 加了状态位之后，对应事件级数索引后加0
+                # thd_desc.insert(status_index+1, 0)
+                # list_desc_data2.extend(tri_buttons_list)
+                #
+                # list_desc_data2.append(null_line)
+                # word_types = ['sensitive', 'department', 'guanzhi']
+                # word_names = ['事件关键词', '涉及部门', '涉及官员']
+                # title_cols = []
+                # for word_name in word_names:
+                #     text = {"text": word_name}
+                #     title_cols.append(text)
+                # word_title = {"cols": title_cols, "strong": True, "size": 14,
+                #               "color": FT_ORANGE}
+                #
+                # # 第四~N行：关键词
+                # words_dict = {}
+                # words_lines = []
+                # for word_type in word_types:
+                #     df_event = df_warning_keywords.loc[
+                #                (df_warning_keywords.events_head_id == events_head_id) & (df_warning_keywords.type == word_type),
+                #                :]
+                #     df_event = df_event.sort_values(by=['freq'], ascending=False).reset_index(drop=True)
+                #     if df_event.iloc[:, 0].size > max_key_words_num:
+                #         df_event = df_event[0:max_key_words_num]
+                #         freq_total = sum(list(df_event['freq']))
+                #         df_event.loc[:, 'freq'] = df_event.loc[:, 'freq'].apply(lambda x: round(x / freq_total, 4))
+                #     words_list = []
+                #     for index, row in df_event.iterrows():
+                #         word_str = "%s ( %.2f%% )" % (row['word'], row['freq'] * 100)
+                #         words_list.append(word_str)
+                #     words_dict[word_type] = words_list
+                #
+                # max_len = max([len(words_dict[i]) for i in words_dict.keys()])
+                # for j in range(0, max_len):
+                #     word_cols = [{"text":""}, {"text":""}, {"text":""}]
+                #     for i in range(0,3):
+                #         word_type = list(words_dict.keys())[i]
+                #         if len(words_dict[word_type]) > j:
+                #             word_cols[i]["text"] = words_dict[word_type][j]
+                #     word_line = {"cols": word_cols, "color": FT_SOBER_BLUE}
+                #     words_lines.append(word_line)
+                #
+                # list_desc_data2.append(word_title)
+                # list_desc_data2.extend(words_lines)
 
-                # 第二/三行：预警详情
-                df_event = df_warning_trace_info.loc[df_warning_trace_info['events_head_id'] == events_head_id, :].reset_index(
-                    drop=True)
-                df_event.loc[:, 'do_time'] = df_event.loc[:, 'do_time'].apply(lambda x: str(x).split('.')[0])
-                df_event = df_event.sort_values(by=['do_time']).reset_index(drop=True)
+                # # 新的版式，右侧list留白，只在底端加一排页码按钮 —— 2018/11/27
+                # page_buttons = {"cols":[{"text":"返回地图", "link":"#backWarningCover"}, {"text":"<section style='text-align:center'>1</section>"}, {"text":"2", "link":"#data:%s/%s/setting_%s_content"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text":"3", "link":"#data:%s/%s/setting_%s_media"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])},{"text":"4", "link":"#data:%s/%s/setting_%s_public"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}], "bg_color":BT_TIFFANY_BLUE, "color":FT_PURE_WHITE, "strong":True}
 
-                latest_trace = df_event.loc[:, 'do_time'].max()
-                warn_event_data = ""
-                earliest_pub_time = str(df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()).split('.')[0]
-                # earliest_trace_time = df_event.loc[: 'do_time'].min()
-                county_name = GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)].split('|')[-1]
-                search_key = ' '.join(df_event["search_key"].values[0].split(' ')[1:])
+                # 用天博专门定制的按钮样式，省了空行的形式 —— 2018/12/4
+                pbs_str = "".join(["<a class='link-widget' state='page_flip_act'>%s</a>"%button["text"] if button["text"] == "1" else "<a class='link-widget' state='page_flip' href='%s'>%s</a>"%(button["link"], button["text"]) for button in pages_button_list])
 
-                # warn_title = "<h3><section style='color: orange; text-align:center'>预警详情</section></h3>"
-                warn_title_info = {"cols": [{"text": "<section style='text-align:center'>预警详情</section>"}, {"text": "部分信息来源", "link": "#data:%s/%s/setting_%s_publishers" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": "返回首页", "link": "#back:"}], "bg_color":BT_TIFFANY_BLUE, "color":FT_PURE_WHITE, "strong":True}
+                page_buttons = [{"cols":[{"text":"<div style='padding-top:550px;text-align:center;'>%s</div>"%pbs_str}]}, {"cols":[{"text":"返回地图页", "link":"#backWarningCover"}]}]   # padding-bottom:40px;
 
-                # "text": "返回首页", "link": "#data:setting"
+                # list_desc_data2 = [null_line]*page_before_lines + [page_buttons]
 
-                latest_weibo_value = df_event.loc[df_event['do_time'] == latest_trace, 'weibo_value'].values[0]
-
-                warn_event_data = "本系统于%s，在互联网上监测到%s发生了一件%s隐患事件，该事件关键字为“<span style='color: orange'>%s</span>”，当前事件网上传播覆盖人次：<span style='color: orange'>%s</span>。此后系统持续追踪，本事件在网上的影响力扩散见左图。<br/>事件当前状态及离各级预警的距离如下：" % (earliest_pub_time, county_name, warning_type, search_key, get_proper_unit_data(latest_weibo_value*526.32))
-                EVENTDESC = warn_event_data.split('<br/>')[0]
-                EVENTDESC = tidy_rich_text(EVENTDESC)
-
-                warn_info = {"cols": [{"text": warn_event_data}]}
-                list_desc_data2.extend([warn_title_info, warn_info, null_line])
-
-
-
-                latest_trace_v = df_event.loc[df_event['do_time'] == latest_trace, 'trace_v'].values[0]
-                latest_trace_a = df_event.loc[df_event['do_time'] == latest_trace, 'trace_a'].values[0]
-
-
-                latest_ws = []
-                for status in WSTATUSES.keys():
-                    locals()[status] = df_event.loc[df_event['do_time'] == latest_trace, status].values[0]
-                    latest_ws.append(locals()[status])
-                # 判断几级事件
-
-                # if latest_wc == 0:
-                if -2 not in latest_ws:
-                    current_events_judge = {}
-                    cant_reach_events_judge = {}
-                    for i in range(0, len(WSTATUSES)+1):
-                        if i == 0:
-                            current_events_judge[i] = ""
-                            cant_reach_events_judge[i] = ""
-                        else:
-                            current_events_judge[i] = list(WSTATUSES.keys())[i-1]
-                            cant_reach_events_judge[i] = list(WSTATUSES.keys())[len(WSTATUSES)-i]
-                    need_time_to_reach = {}
-                    for status in WSTATUSES.keys():
-                        if locals()[status] > 0:
-                            need_time_to_reach[status] = locals()[status]
-
-                    # 当前的事件等级
-                    event_status = current_events_judge[latest_ws.count(0)]
-                    # 达不到的等级
-                    cant_reach = cant_reach_events_judge[latest_ws.count(-1)]
-                    if event_status == '':
-                        event_info = "事件追踪中。"
-                        advise_info = "<span style='color: orange'>持续关注，及时应对。</span>"
-                        already_pass_dict = {}
-                    else:
-                        status_info = WSTATUSES[event_status]
-                        first_warn_time = datetime.strptime(df_event.loc[df_event[event_status] == 0, 'do_time'].min(),
-                                                            '%Y-%m-%d %H:%M:%S')
-                        latest_trace_time = datetime.strptime(latest_trace, '%Y-%m-%d %H:%M:%S')
-                        interdays = (latest_trace_time - first_warn_time).days
-                        interseconds = (latest_trace_time - first_warn_time).seconds
-                        warn_interhours = interdays*24 + interseconds/3600
-                        event_info = "<span style='color: orange'>%s</span>事件，触发%s预警已<span style='color: orange'>%.2f</span>小时，已成为<span style='color: orange'>%s</span>范围内的热点话题。%s"%(status_info['name'], status_info['name'], warn_interhours, status_info['area'], status_info['desc'])
-                        advise_info = status_info['advise']
-                        # 已超过的其他门限
-                        already_pass_dict = {}
-                        for warning_key in WSTATUSES.keys():
-                            if warning_key < event_status:
-                                first_warning_time = datetime.strptime(df_event.loc[df_event[warning_key]==0, 'do_time'].min(), '%Y-%m-%d %H:%M:%S')
-                                other_interdays = (latest_trace_time-first_warning_time).days
-                                other_interseconds = (latest_trace_time-first_warning_time).seconds
-                                other_warn_interhours = other_interdays*24 + other_interseconds/3600
-                                other_event_info = "触发<span style='color: orange'>%s</span>预警已<span style='color: orange'>%.2f</span>小时。影响范围早已超过<span style='color: orange'>%s</span>，现事件影响程度已高于%s事件。<br/>一般而言，%s事件的影响程度为：%s"%(WSTATUSES[warning_key]['name'],other_warn_interhours, WSTATUSES[warning_key]['area'], WSTATUSES[warning_key]['name'], WSTATUSES[warning_key]['name'], WSTATUSES[warning_key]['desc'])
-                                already_pass_dict[WSTATUSES[warning_key]['name']] = other_event_info
-
-                    if cant_reach != '':
-                        cant_reach_dict = {}
-                        cant_reach_info = WSTATUSES[cant_reach]
-                        events_grades = ["A级", "B级", "C级"]
-                        events_scopes = ["区域", "省域", "全国"]
-                        warning_signs = ['warning_a', 'warning_b', 'warning_c']
-                        cant_reach_grades = events_grades[events_grades.index(cant_reach_info['name']):]
-                        for i in cant_reach_grades:
-                            cant_reach_event_info = "评估本事件当前的传播速度、加速度等，发展为<span style='color: orange'>%s</span>性(%s)事件的概率仅为：<span style='color: orange'>10%%~20%%</span>。<br/>一般而言，%s事件的影响程度为：%s"%(events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
-                            cant_reach_dict[i] = cant_reach_event_info
-
-                    if len(need_time_to_reach) != 0:
-                        need_time_list = []
-                        need_time_dict = {}
-                        for key in need_time_to_reach.keys():
-                            need_time_info = WSTATUSES[key]
-                            need_time_str = "本事件有<span style='color: orange'>80%%~90%%</span>的概率将于<span style='color: orange'>%.2f小时</span>后发展为%s（%s）事件。<br/>一般而言，%s事件的影响程度为：%s"%(need_time_to_reach[key], need_time_info['area'], need_time_info['name'], need_time_info['name'], need_time_info['desc'])
-                            need_time_list.append(need_time_str)
-                            need_time_dict[need_time_info['name']] = need_time_str
-                        need_time_desc = "若放任不管，经评估当前状态，"+''.join(need_time_list)
-                        # advise_info += need_time_desc
-
-                # 如果是刚开始的几个周期，就根据值来判断当前等级，并给其他两个等级为 —— “刚开始追踪，距离/超过时间尚在计算”
-                else:
-                    events_grades = ["A级", "B级", "C级"]
-                    events_scopes = ["区域", "省域", "全国"]
-                    warning_signs = ['warning_a', 'warning_b', 'warning_c']
-                    # 当前事件所处等级
-                    event_grade = THD_GRADES[EVENTS_HEAD_IDS.index(events_head_id)]
-                    need_time_to_reach = {}
-                    already_pass_dict = {}
-                    cant_reach = "newly_start"
-                    cant_reach_dict = {}
-                    # 追踪中
-                    if event_grade == "追踪中":
-                        event_status = ''
-                        event_info = "事件追踪中。"
-                        advise_info = "<span style='color: orange'>持续关注，及时应对。</span>"
-                        for i in events_grades:
-                            cant_reach_dict[i] = "当前处于追踪的前五个采样周期，事件距离<span style='color: orange'>%s</span>性(%s)事件的时间和概率尚在计算中。<br/>一般而言，%s事件的影响程度为：%s"%(events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
-                    # 已达到其他等级的事件
-                    else:
-                        event_status = warning_signs[events_grades.index(event_grade)]
-                        status_info = WSTATUSES[event_status]
-                        # first_warn_time = datetime.strptime(df_event.loc[df_event[event_status] == 0, 'do_time'].min(),
-                        #                                     '%Y-%m-%d %H:%M:%S')
-                        # latest_trace_time = datetime.strptime(latest_trace, '%Y-%m-%d %H:%M:%S')
-                        # warn_interval = (latest_trace_time - first_warn_time).seconds
-                        event_info = "<span style='color: orange'>%s</span>事件，已成为<span style='color: orange'>%s</span>范围内的热点话题。%s" % (status_info['name'], status_info['area'], status_info['desc'])
-                        advise_info = status_info['advise']
-                        other_grades = [i for i in events_grades if i != event_grade]
-                        for i in other_grades:
-                            cant_reach_dict[i] = "当前处于追踪的前五个采样周期，事件距离<span style='color: orange'>%s</span>性(%s)事件的时间和概率尚在计算中。<br/>一般而言，%s事件的影响程度为：%s" % (events_scopes[events_grades.index(i)], i, i,WSTATUSES[warning_signs[events_grades.index(i)]]['desc'])
-
-                C_warning_button = {
-                    "cols": [{"text": "全国性（C级）事件", "link": "#list:%s/%s/%sC" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}, {"text": ""},
-                             {"text": ""}]}
-                B_warning_button = {
-                    "cols": [{"text": "省域性（B级）事件", "link": "#list:%s/%s/%sB" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])},
-                             {"text": ""}]}
-                A_warning_button = {
-                    "cols": [{"text": "区域性（A级）事件", "link": "#list:%s/%s/%sA" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}]}
-                TRACE_warning_button = {
-                    "cols": [{"text": "正在追踪的事件", "link": "#list:%s/%s/%strace" % (node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}]}
-                tri_buttons_list = [C_warning_button, B_warning_button, A_warning_button, TRACE_warning_button]
-
-                thd_desc = ["C级", "B级", "A级", " "]  # 空格表示追踪中，没到三级预警门限
-                thd_scopes = ["全国", "省域", "区域", " "]  # 空格表示追踪中，没到三级预警门限
-                thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
-                color_dict = {"A级": LN_GOLDEN, "B级": LN_YELLOW, "C级": LN_RED, " ": FT_SOBER_BLUE}
-
-                if event_status != '':
-                    status_grade = WSTATUSES[event_status]['name']
-                    del tri_buttons_list[-1]
-                    # grade_type = status_grade[0]
-                else:
-                    status_grade = " "
-                    # grade_type = "trace"
-                status_index = thd_desc.index(status_grade)
-                # del tri_buttons_list[status_index]["cols"][0]["link"]
-                # tri_buttons_list[status_index]["cols"][0]["text"] = "<section style='text-align:center'>"+"本县当前："+tri_buttons_list[status_index]["cols"][0]["text"]+"</section>"
-                tri_buttons_list[status_index]["strong"] = True
-                # tri_buttons_list[status_index]["color"] = color_dict[status_grade]
-                tri_buttons_list[status_index]["cols"][0]["text"] = "<span style='color: %s'>"%(color_dict[status_grade]) + tri_buttons_list[status_index]["cols"][0]["text"] + "</span>"
-                tri_buttons_list[status_index]["cols"][0]["link"] = "#list:%s/%s/%svalue"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])
-                # "#data:setting_%s_%s_indexes"%(events_short_dict[events_head_id], index_col.split('_')[-1])
-                tri_buttons_list[status_index]["cols"][0]["color"] = color_dict[status_grade]
-                status_desc = "<span style='color: orange'>事件当前状态</span>：%s<br/><span style='color: orange'>系统建议</span>：%s"%(event_info, advise_info)
-                status_desc_line = {"cols":[{"text":"%s"%status_desc}]}  # , "color":color_dict[status_grade]
-                tri_buttons_list.insert(status_index+1, status_desc_line)
-                # 加了状态位之后，对应事件级数索引后加0
-                thd_desc.insert(status_index+1, 0)
-                list_desc_data2.extend(tri_buttons_list)
-
-                list_desc_data2.append(null_line)
-                word_types = ['sensitive', 'department', 'guanzhi']
-                word_names = ['事件关键词', '涉及部门', '涉及官员']
-                title_cols = []
-                for word_name in word_names:
-                    text = {"text": word_name}
-                    title_cols.append(text)
-                word_title = {"cols": title_cols, "strong": True, "size": 14,
-                              "color": FT_ORANGE}
-
-                # 第四~N行：关键词
-                words_dict = {}
-                words_lines = []
-                for word_type in word_types:
-                    df_event = df_warning_keywords.loc[
-                               (df_warning_keywords.events_head_id == events_head_id) & (df_warning_keywords.type == word_type),
-                               :]
-                    df_event = df_event.sort_values(by=['freq'], ascending=False).reset_index(drop=True)
-                    if df_event.iloc[:, 0].size > max_key_words_num:
-                        df_event = df_event[0:max_key_words_num]
-                        freq_total = sum(list(df_event['freq']))
-                        df_event.loc[:, 'freq'] = df_event.loc[:, 'freq'].apply(lambda x: round(x / freq_total, 4))
-                    words_list = []
-                    for index, row in df_event.iterrows():
-                        word_str = "%s ( %.2f%% )" % (row['word'], row['freq'] * 100)
-                        words_list.append(word_str)
-                    words_dict[word_type] = words_list
-
-                max_len = max([len(words_dict[i]) for i in words_dict.keys()])
-                for j in range(0, max_len):
-                    word_cols = [{"text":""}, {"text":""}, {"text":""}]
-                    for i in range(0,3):
-                        word_type = list(words_dict.keys())[i]
-                        if len(words_dict[word_type]) > j:
-                            word_cols[i]["text"] = words_dict[word_type][j]
-                    word_line = {"cols": word_cols, "color": FT_SOBER_BLUE}
-                    words_lines.append(word_line)
-
-                list_desc_data2.append(word_title)
-                list_desc_data2.extend(words_lines)
+                list_desc_data2 = page_buttons
 
                 list_desc[index_id]["datas"] = list_desc_data2
                 # 解说
-                list_desc[index_id]["desc"] = EVENTDESC
+                # list_desc[index_id]["desc"] = EVENTDESC
 
-                # 剩下的其它状态
-                last_statuses = [i for i in thd_desc if i not in [status_grade, " ", 0]]
-                for status in last_statuses:
-                    index_id_other = EVENTS_SHORT_DICT[events_head_id] + status[0]
-                    list_desc[index_id_other] = {"title": "", "sub_title": "", "width": "35%", "desc":EVENTDESC}
-                    list_desc_data3 = [gov_info, warn_title_info, warn_info, null_line]
-                    other_status_index = thd_desc.index(status)
-                    tri_buttons_list_other = deepcopy(tri_buttons_list)
-                    tri_buttons_list_other[other_status_index]["cols"][0]["link"] = "#list:%s/%s/%svalue"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])
-                    tri_buttons_list_other[other_status_index]["strong"] = True
-                    # tri_buttons_list_other[other_status_index]["color"] = color_dict[status]
-                    tri_buttons_list_other[other_status_index]["cols"][0]["text"] = "<span style='color: %s'>" % (
-                    color_dict[status]) + tri_buttons_list_other[other_status_index]["cols"][0]["text"] + "</span>"
-                    # tri_buttons_list_other[other_status_index]["cols"][0]["color"] = color_dict[status]
-                    status_desc = ""
-                    if cant_reach != '':
-                        if status in cant_reach_dict.keys():
-                            status_desc += cant_reach_dict[status]
-                    if len(need_time_to_reach) != 0:
-                        if status in need_time_dict.keys():
-                            status_desc += need_time_dict[status]
-                    if len(already_pass_dict) != 0:
-                        if status in already_pass_dict.keys():
-                            status_desc += already_pass_dict[status]
-                    status_desc_line = {"cols": [{"text": "%s" % status_desc}]}  # , "color":color_dict[status_grade]
-                    tri_buttons_list_other.insert(other_status_index + 1, status_desc_line)
-                    list_desc_data3.extend(tri_buttons_list_other)
-                    # 关键词
-                    list_desc_data3.extend([null_line, word_title])
-                    list_desc_data3.extend(words_lines)
-                    list_desc[index_id_other]["datas"] = list_desc_data3
+                # # 剩下的其它状态
+                # last_statuses = [i for i in thd_desc if i not in [status_grade, " ", 0]]
+                # for status in last_statuses:
+                #     index_id_other = EVENTS_SHORT_DICT[events_head_id] + status[0]
+                #     list_desc[index_id_other] = {"title": "", "sub_title": "", "width": "35%", "desc":EVENTDESC}
+                #     list_desc_data3 = [gov_info, warn_title_info, warn_info, null_line]
+                #     other_status_index = thd_desc.index(status)
+                #     tri_buttons_list_other = deepcopy(tri_buttons_list)
+                #     tri_buttons_list_other[other_status_index]["cols"][0]["link"] = "#list:%s/%s/%svalue"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])
+                #     tri_buttons_list_other[other_status_index]["strong"] = True
+                #     # tri_buttons_list_other[other_status_index]["color"] = color_dict[status]
+                #     tri_buttons_list_other[other_status_index]["cols"][0]["text"] = "<span style='color: %s'>" % (
+                #     color_dict[status]) + tri_buttons_list_other[other_status_index]["cols"][0]["text"] + "</span>"
+                #     # tri_buttons_list_other[other_status_index]["cols"][0]["color"] = color_dict[status]
+                #     status_desc = ""
+                #     if cant_reach != '':
+                #         if status in cant_reach_dict.keys():
+                #             status_desc += cant_reach_dict[status]
+                #     if len(need_time_to_reach) != 0:
+                #         if status in need_time_dict.keys():
+                #             status_desc += need_time_dict[status]
+                #     if len(already_pass_dict) != 0:
+                #         if status in already_pass_dict.keys():
+                #             status_desc += already_pass_dict[status]
+                #     status_desc_line = {"cols": [{"text": "%s" % status_desc}]}  # , "color":color_dict[status_grade]
+                #     tri_buttons_list_other.insert(other_status_index + 1, status_desc_line)
+                #     list_desc_data3.extend(tri_buttons_list_other)
+                #     # 关键词
+                #     list_desc_data3.extend([null_line, word_title])
+                #     list_desc_data3.extend(words_lines)
+                #     list_desc[index_id_other]["datas"] = list_desc_data3
 
-        # 微博详情对应的list_desc
-        para_dict = warning_dict[node_code]["parameters"]
-        w0 = para_dict["K_weibo"]
-        wr = para_dict["K_read"]
-        wc = para_dict["K_comment"]
-        ws = para_dict["K_share"]
-        # 事件参与度
-        df_warning_details["event_participation"] = w0 * 1 + wr * df_warning_details["count_read"] + wc * \
-                                                    df_warning_details["count_comment"] + ws * df_warning_details[
-                                                        "count_share"]
-        # 博主影响力
-        df_warning_details["publisher_impact"] = df_warning_details["followers_count"]
-        for events_head_id in EVENTS_HEAD_IDS:
 
-            # debug
-            # if events_head_id != "c5b69fccbaca8720a2951470c51fab93":
-            #     continue
+            # content页的描述 —— 2018/12/4改
+            pbs_str_content = "".join(["<a class='link-widget' state='page_flip_act'>%s</a>"%button["text"] if button["text"] == "2" else "<a class='link-widget' state='page_flip' href='%s'>%s</a>"%(button["link"], button["text"]) for button in pages_button_list])
+            page_buttons_content = [{"cols":[{"text":"%s"%(re.sub(re.match(r"<div.*?>(.*?)</div>", page_buttons[0]["cols"][0]["text"])[1], pbs_str_content, page_buttons[0]["cols"][0]["text"]))}]}, page_buttons[1]]
+            list_desc[EVENTS_SHORT_DICT[events_head_id] + "cont"] = {"title":"", "sub_title":"", "datas":page_buttons_content, "width": events_desc_width}
 
-            index_id = EVENTS_SHORT_DICT[events_head_id]+'publisher'
-            list_desc[index_id] = {"title":"", "sub_title": "", "width": "35%"}
-            list_desc_data4 = []
-            # 第一行：标题
-            gov_title = "<h3><section style='text-align:center'>%s</section></h3>" % GOV_NAMES[
-                EVENTS_HEAD_IDS.index(events_head_id)]
-            gov_info = {"cols": [{"text": gov_title}]}
-            list_desc_data4.append(gov_info)
 
-            # 第二行：按钮返回
-            # {"text": "返回", "link": "#data:setting_%s_value_indexes" % events_short_dict[events_head_id]}
-            button_line = {"cols": [{"text": "返回", "link": "#back:"}],
-                           "strong": True, "size": 14, "bg_color": BT_TIFFANY_BLUE, "color": FT_PURE_WHITE}
-            # button_line = {"cols": [{"text": "预警详情", "link": "#data:setting_%s_value_indexes"% events_short_dict[events_head_id]},
-            #                         {"text": "<section style='text-align:center'>部分信息来源</section>"},{"text": "返回首页", "link": "#data:setting"}], "bg_color": BT_TIFFANY_BLUE,"color": FT_PURE_WHITE, "strong": True}
-            list_desc_data4.append(button_line)
+            # 媒体页的描述
+            # list_desc_media = deepcopy(list_desc_data2)
+            # list_desc_media[-1]["cols"][1] = {"text":"1", "link":"#data:%s/%s/setting_%s_value_indexes"%(node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}
+            # list_desc_media[-1]["cols"][3] = {"text": "<section style='text-align:center'>3</section>"}
 
-            # 第三行：微博详情；第四~六行：典型评论；第七——：发布者info
-            df_event = df_warning_details.loc[(df_warning_details.events_head_id == events_head_id), :]
-            df_event = df_event.sort_values(by=["event_participation"], ascending=False).reset_index(drop=True)
-            # df_event
-            if df_event.iloc[:, 0].size > 20:
-                df_event = df_event[0:20]
+            pbs_str_media = "".join(["<a class='link-widget' state='page_flip_act'>%s</a>" % button["text"] if button["text"] == "3" else "<a class='link-widget' state='page_flip' href='%s'>%s</a>" % (
+            button["link"], button["text"]) for button in pages_button_list])
+            page_buttons_media = [{"cols": [{"text": "%s" % (
+                re.sub(re.match(r"<div.*?>(.*?)</div>", page_buttons[0]["cols"][0]["text"])[1], pbs_str_media,
+                       page_buttons[0]["cols"][0]["text"]))}]}, page_buttons[1]]
+            list_desc[EVENTS_SHORT_DICT[events_head_id]+"media"] = {"title":"", "sub_title":"", "datas":page_buttons_media, "width": events_desc_width}
 
-            DETAILDESC = ""
+            # 评价关键词的描述
+            # list_desc_keywords = deepcopy(list_desc_data2)
+            # list_desc_keywords[-1]["cols"][1] = {"text": "1", "link": "#data:%s/%s/setting_%s_value_indexes" % (
+            # node_code, gov_code_str, EVENTS_SHORT_DICT[events_head_id])}
+            # list_desc_keywords[-1]["cols"][4] = {"text": "<section style='text-align:center'>4</section>"}
 
-            # weibo_title = {"cols":[{"text":"<h3><section style='text-align:center'>事件相关微博</section></h3>"}], "strong":True, "color":FT_ORANGE}
-            weibo_title = {"cols": [{"text": "部分事件信息"}],"strong": True, "color": FT_ORANGE}
-            for i in df_event.index:
-                lenth = len(df_event.loc[i, "content"])
-                if len(df_event.loc[i, 'content']) >= 10:
-                    if lenth <= 80:
-                        k = lenth
-                    else:
-                        k = 80
-                    # 微博页【部分时间信息】也补上【查看详情】按钮
-                    weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...'), "details":"%s:%s"%(str(df_event.loc[i, 'pub_time']), str(df_event.loc[i, "content"])),"ismore":"查看全文"}]}
-                    list_desc_data4.extend([weibo_title, weibo_content])
-                    DETAILDESC = gov_title+":"+weibo_title["cols"][0]["text"]+":"+weibo_content["cols"][0]["text"]
-                    DETAILDESC = tidy_rich_text(DETAILDESC)
-                    break
+            pbs_str_keywords = "".join(["<a class='link-widget' state='page_flip_act'>%s</a>" % button["text"] if button["text"] == "4" else "<a class='link-widget' state='page_flip' href='%s'>%s</a>" % (
+                button["link"], button["text"]) for button in pages_button_list])
+            page_buttons_keywords = [{"cols": [{"text": "%s" % (
+                re.sub(re.match(r"<div.*?>(.*?)</div>", page_buttons[0]["cols"][0]["text"])[1], pbs_str_keywords,
+                       page_buttons[0]["cols"][0]["text"]))}]}, page_buttons[1]]
+            list_desc[EVENTS_SHORT_DICT[events_head_id] + "public"] = {"title": "", "sub_title": "",
+                                                                      "datas": page_buttons_keywords, "width": events_desc_width}
 
-            # if DETAILDESC == "":
-            #     print(events_head_id)
 
-            # 评论信息
-            df_comments = df_warning_weibo_comments.loc[(df_warning_weibo_comments.events_head_id == events_head_id), :]
-            # comment_title = {"cols":[{"text":"<h3><section style='text-align:center'>典型评论</section></h3>"}], "strong":True, "color":FT_ORANGE}
-            comment_title = {"cols": [{"text": "部分民众评价"}], "strong": True, "color": FT_ORANGE}
-            list_desc_data4.append(comment_title)
-            comments_list = []
-            for i in df_comments['comments_shown']:
-                if len(i) == 0:
-                    continue
-                for j in i:
-                    comments_list.append(j)
-            if len(comments_list) == 0:
-                comments_str = "无。"
-                comments_info = {"cols":[{"text":comments_str}]}
-                list_desc_data4.append(comments_info)
-            else:
-                comments_info = ""
-                if len(comments_list) <= SHOW_COMMENTS_LIMIT:
-                    k = len(comments_list)
-                else:
-                    k = SHOW_COMMENTS_LIMIT
-                for i in range(0, k):
-                    # comments_info = {"cols":[{"text":comments_list[i]}]}
-                    # list_desc_data4.append(comments_info)
-
-                    # 2018/9/10 加滚动，改成p标签的超文本形式
-                    comments_info += "<p>"+comments_list[i]+"</p><p></p>"
-                list_desc_data4.append({"cols":[{"isscroll":True, "text":comments_info}]})
-
-            publish_title = {"cols":[{"text":"发布者"}, {"text":"事件参与度"}, {"text":"影响力"}], "strong":True, "color":FT_ORANGE}
-            list_desc_data4.append(publish_title)
-            for index, row in df_event.iterrows():
-                publish_info = {"cols":[{"text":row["post_name"]}, {"text":"%s"%row['event_participation']}, {"text":"%s"%row["publisher_impact"]}], "color":FT_SOBER_BLUE}
-                list_desc_data4.append(publish_info)
-            list_desc[index_id]["datas"] = list_desc_data4
-            list_desc[index_id]["desc"] = DETAILDESC
+        # 2018/12/4 —— 改版后没有以下描述
+        # # 微博详情对应的list_desc
+        # para_dict = warning_dict[node_code]["parameters"]
+        # w0 = para_dict["K_weibo"]
+        # wr = para_dict["K_read"]
+        # wc = para_dict["K_comment"]
+        # ws = para_dict["K_share"]
+        # # 事件参与度
+        # df_warning_details["event_participation"] = w0 * 1 + wr * df_warning_details["count_read"] + wc * \
+        #                                             df_warning_details["count_comment"] + ws * df_warning_details[
+        #                                                 "count_share"]
+        # # 博主影响力
+        # df_warning_details["publisher_impact"] = df_warning_details["followers_count"]
+        # for events_head_id in EVENTS_HEAD_IDS:
+        #
+        #     # debug
+        #     # if events_head_id != "c5b69fccbaca8720a2951470c51fab93":
+        #     #     continue
+        #
+        #     index_id = EVENTS_SHORT_DICT[events_head_id]+'publisher'
+        #     list_desc[index_id] = {"title":"", "sub_title": "", "width": "35%"}
+        #     list_desc_data4 = []
+        #     # 第一行：标题
+        #     gov_title = "<h3><section style='text-align:center'>%s</section></h3>" % GOV_NAMES[
+        #         EVENTS_HEAD_IDS.index(events_head_id)]
+        #     gov_info = {"cols": [{"text": gov_title}]}
+        #     list_desc_data4.append(gov_info)
+        #
+        #     # 第二行：按钮返回
+        #     # {"text": "返回", "link": "#data:setting_%s_value_indexes" % events_short_dict[events_head_id]}
+        #     button_line = {"cols": [{"text": "返回", "link": "#back:"}],
+        #                    "strong": True, "size": 14, "bg_color": BT_TIFFANY_BLUE, "color": FT_PURE_WHITE}
+        #     # button_line = {"cols": [{"text": "预警详情", "link": "#data:setting_%s_value_indexes"% events_short_dict[events_head_id]},
+        #     #                         {"text": "<section style='text-align:center'>部分信息来源</section>"},{"text": "返回首页", "link": "#data:setting"}], "bg_color": BT_TIFFANY_BLUE,"color": FT_PURE_WHITE, "strong": True}
+        #     list_desc_data4.append(button_line)
+        #
+        #     # 第三行：微博详情；第四~六行：典型评论；第七——：发布者info
+        #     df_event = df_warning_details.loc[(df_warning_details.events_head_id == events_head_id), :]
+        #     df_event = df_event.sort_values(by=["event_participation"], ascending=False).reset_index(drop=True)
+        #     # df_event
+        #     if df_event.iloc[:, 0].size > 20:
+        #         df_event = df_event[0:20]
+        #
+        #     DETAILDESC = ""
+        #
+        #     # weibo_title = {"cols":[{"text":"<h3><section style='text-align:center'>事件相关微博</section></h3>"}], "strong":True, "color":FT_ORANGE}
+        #     weibo_title = {"cols": [{"text": "部分事件信息"}],"strong": True, "color": FT_ORANGE}
+        #     for i in df_event.index:
+        #         lenth = len(df_event.loc[i, "content"])
+        #         if len(df_event.loc[i, 'content']) >= 10:
+        #             if lenth <= 80:
+        #                 k = lenth
+        #             else:
+        #                 k = 80
+        #             # 微博页【部分时间信息】也补上【查看详情】按钮
+        #             weibo_content = {"cols":[{"text":"%s：%s"%(df_event.loc[i, 'pub_time'], df_event.loc[i, "content"][0:k]+'...'), "details":"%s:%s"%(str(df_event.loc[i, 'pub_time']), str(df_event.loc[i, "content"])),"ismore":"查看全文"}]}
+        #             list_desc_data4.extend([weibo_title, weibo_content])
+        #             DETAILDESC = gov_title+":"+weibo_title["cols"][0]["text"]+":"+weibo_content["cols"][0]["text"]
+        #             DETAILDESC = tidy_rich_text(DETAILDESC)
+        #             break
+        #
+        #     # if DETAILDESC == "":
+        #     #     print(events_head_id)
+        #
+        #     # 评论信息
+        #     df_comments = df_warning_weibo_comments.loc[(df_warning_weibo_comments.events_head_id == events_head_id), :]
+        #     # comment_title = {"cols":[{"text":"<h3><section style='text-align:center'>典型评论</section></h3>"}], "strong":True, "color":FT_ORANGE}
+        #     comment_title = {"cols": [{"text": "部分民众评价"}], "strong": True, "color": FT_ORANGE}
+        #     list_desc_data4.append(comment_title)
+        #     comments_list = []
+        #     for i in df_comments['comments_shown']:
+        #         if len(i) == 0:
+        #             continue
+        #         for j in i:
+        #             comments_list.append(j)
+        #     if len(comments_list) == 0:
+        #         comments_str = "无。"
+        #         comments_info = {"cols":[{"text":comments_str}]}
+        #         list_desc_data4.append(comments_info)
+        #     else:
+        #         comments_info = ""
+        #         if len(comments_list) <= SHOW_COMMENTS_LIMIT:
+        #             k = len(comments_list)
+        #         else:
+        #             k = SHOW_COMMENTS_LIMIT
+        #         for i in range(0, k):
+        #             # comments_info = {"cols":[{"text":comments_list[i]}]}
+        #             # list_desc_data4.append(comments_info)
+        #
+        #             # 2018/9/10 加滚动，改成p标签的超文本形式
+        #             comments_info += "<p>"+comments_list[i]+"</p><p></p>"
+        #         list_desc_data4.append({"cols":[{"isscroll":True, "text":comments_info}]})
+        #
+        #     publish_title = {"cols":[{"text":"发布者"}, {"text":"事件参与度"}, {"text":"影响力"}], "strong":True, "color":FT_ORANGE}
+        #     list_desc_data4.append(publish_title)
+        #     for index, row in df_event.iterrows():
+        #         publish_info = {"cols":[{"text":row["post_name"]}, {"text":"%s"%row['event_participation']}, {"text":"%s"%row["publisher_impact"]}], "color":FT_SOBER_BLUE}
+        #         list_desc_data4.append(publish_info)
+        #     list_desc[index_id]["datas"] = list_desc_data4
+        #     list_desc[index_id]["desc"] = DETAILDESC
     return setting_list, setting_name_list, list_desc
 
 
@@ -1776,7 +2205,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
                 write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
 
         # 得到setting和list文件
-        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, warning_map_data_name_list, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
         if len(setting_list) > 0:
             # for position in range(len(warning_map_data_list)):
             #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
@@ -1800,7 +2229,7 @@ def generate_html_content(gov_code, node_code, df_warning_trace_info, df_warning
                                            warning_map_data_list[position])
 
         # 得到setting和list文件
-        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
+        setting_list, setting_name_list, list_desc = get_warning_setting_desc_data(gov_code, node_code, warning_map_data_name_list, df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, monitor_time, info_dict, record_now)
         if len(setting_list) > 0:
             # for position in range(len(warning_map_data_list)):
             #     write_client_datafile_json(target_dir_path, warning_map_data_name_list[position], '.json',warning_map_data_list[position])
@@ -2125,11 +2554,17 @@ def assign_events_related_global_variables(node_code):
     EVENTS_LINKS = []
     THD_GRADES = []
     SCOPE_GRADES = []
+
+    # 事件相关微博首发时间
     EVENTS_OCCUR_TIME = []
+    # 首发博主
+    EVENTS_FIRST_POST = []
 
     EVENTS_CONTENTS = []
-    DF_EVENTS_BASIC = pd.DataFrame()
+    # 事件主题关键词 —— 2018/11/29 加
+    EVENTS_KEYTITLE = []
 
+    DF_EVENTS_BASIC = pd.DataFrame()
 
     para_dict = warning_dict[node_code]["parameters"]
 
@@ -2162,9 +2597,18 @@ def assign_events_related_global_variables(node_code):
         gov_id = df_warning_trace_info[df_warning_trace_info['events_head_id'] == events_head_id]['gov_id'].values[0]
         gov_code = df_2861_county[df_2861_county['gov_id'] == gov_id].index.values[0]
         gov_name = df_2861_county[df_2861_county['gov_id'] == gov_id]['full_name'].values[0]
-        earliest_pub_time = str(df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()).split('.')[0]
+        # earliest_pub_time = str(df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()).split('.')[0]
+        earliest_pub_time = df_warning_details.loc[df_warning_details['events_head_id'] == events_head_id, 'pub_time'].min()
+
+        # 首发博主 2018/11/29
+        first_post = df_warning_details[(df_warning_details.events_head_id == events_head_id)&(df_warning_details.pub_time == earliest_pub_time)]["post_name"].values[0]
+
+        earliest_pub_time = str(earliest_pub_time).split('.')[0]
+
         weibo_value = max(
             list(df_warning_trace_info[df_warning_trace_info['events_head_id'] == events_head_id]['weibo_value']))
+
+        event_title = " ".join(df_warning_trace_info[df_warning_trace_info.events_head_id == events_head_id]["search_key"].values[0].split(' ')[1:])
 
         for thd in thds:
             if weibo_value >= thd:
@@ -2179,36 +2623,46 @@ def assign_events_related_global_variables(node_code):
         GOV_NAMES.append(gov_name)
         NEWLY_WEIBO_VALUES.append(weibo_value)
         EVENTS_OCCUR_TIME.append(earliest_pub_time)
+
+        # 首发博主
+        EVENTS_FIRST_POST.append(first_post)
+
         EVENTS_LINKS.append("%s/%s/setting_%s_value_indexes"%(node_code, common_folder_code, EVENTS_SHORT_DICT[events_head_id]))
+        EVENTS_KEYTITLE.append(event_title)
 
         # 事件内容
         df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
-        df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
-        # df_event = df_warning_details[df_warning_details.events_head_id == events_head_id]
         # df_event = df_event.sort_values(by=["content"], ascending=False).reset_index(drop=True)
+
+        # 根据content的长度排序，而不是直接根据content排序 —— 2018/11/29改
+        df_event["content_len"] = df_event["content"].str.len()
+        df_event = df_event.sort_values(by=["content_len"],ascending=False).reset_index(drop=True)
+
         event_weibo_num = df_event.shape[0]
         k = 0
         for index, row in df_event.iterrows():
             k += 1
             content = row["content"].split("//@")[-1]
             if len(content) >= 10:
-                if len(content) <= 150:
-                    k = len(content)
-                else:
-                    k = 150
-                EVENTS_CONTENTS.append(content[0:k]+"...")
+                # if len(content) <= 150:
+                #     k = len(content)
+                # else:
+                #     k = 150
+
+                # 改为给全量，展示的时候再取 —— 2018/11/29
+                # EVENTS_CONTENTS.append(content[0:k]+"...")
+                EVENTS_CONTENTS.append(content)
                 break
             else:
                 if k == event_weibo_num:
                     if len(df_event.loc[0, "content"].split("//@")[-1]) == 0:
-                        EVENTS_CONTENTS.append("暂无详情")
+                        EVENTS_CONTENTS.append("暂无详情。")
                     else:
                         EVENTS_CONTENTS.append(df_event.loc[0, "content"].split("//@")[-1])
                 else:
                     continue
 
-
-    df_data_dict = {"events_head_id":EVENTS_HEAD_IDS, "events_short":EVENTS_SHORT, "gov_id":GOV_IDS, "gov_code":GOV_CODES, "gov_name":GOV_NAMES, "newly_weibo_value":NEWLY_WEIBO_VALUES, "events_link":EVENTS_LINKS, "thd_grade":THD_GRADES, "scope_grade":SCOPE_GRADES, "events_occur_time":EVENTS_OCCUR_TIME, "events_content":EVENTS_CONTENTS}
+    df_data_dict = {"events_head_id":EVENTS_HEAD_IDS, "events_short":EVENTS_SHORT, "gov_id":GOV_IDS, "gov_code":GOV_CODES, "gov_name":GOV_NAMES, "newly_weibo_value":NEWLY_WEIBO_VALUES, "events_link":EVENTS_LINKS, "thd_grade":THD_GRADES, "scope_grade":SCOPE_GRADES, "events_occur_time":EVENTS_OCCUR_TIME, "events_content":EVENTS_CONTENTS, "events_keytitle":EVENTS_KEYTITLE, "events_first_post":EVENTS_FIRST_POST}
     DF_EVENTS_BASIC = pd.DataFrame(df_data_dict)
     return
 
@@ -2273,6 +2727,7 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         global df_warning_weibo_comments
 
         events_type = warning_dict[node_code]["events_type"]
+        parameters = warning_dict[node_code]["parameters"]
         if 0:
             df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num = get_events_data(monitor_time, events_type)
 
@@ -2307,6 +2762,12 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
         # 2018/8/24 —— 更改了拿数据的方式，load json 或者 读csv
         if 1:
             df_warning_trace_info, df_warning_keywords, df_warning_details, df_warning_weibo_comments, events_num, record_now = get_newliest_events_data(node_code)
+
+            # 事件参与度
+            df_warning_details["event_participation"] = parameters["K_weibo"]*1 + parameters["K_read"]*df_warning_details["count_read"] + parameters["K_comment"]*df_warning_details["count_comment"] + parameters["K_share"]*df_warning_details["count_share"]
+
+            # 博主影响力
+            df_warning_details["publiser_impact"] = df_warning_details["followers_count"]
 
         print("GET EVENTS DATA DONE~")
 
@@ -2457,7 +2918,8 @@ provinces_all = [
 
 # 产生前端主界面文件
 def generate_datafile(provinces=provinces_all, same_provs=True):
-    # provinces = ['110101', '510104']
+    # '110101',
+    # provinces = ['110101','140221', '511324']
     current_day = time.strftime('%Y-%m-%d %H:%M:%S')
     web_leaves_datafile(provinces, current_day, same_provs)
     # app_env_date = time.strftime('%Y-%m-%d %H:%M:%S')
