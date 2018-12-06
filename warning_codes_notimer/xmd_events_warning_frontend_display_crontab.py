@@ -145,15 +145,16 @@ WCOLORS = {'A':LN_GOLDEN, "B":LN_YELLOW, "C":LN_RED, '追':ZZ_BLUE}
 scopes_dict = {"A":"区域级", "B":"省域级", "C":"全国级", "追":"追踪中"}
 
 
-WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较小，易被忽略。但隐患正在积累，蓄势待发。', 'advise':"<span style='color: orange'>立即回应，进行处理</span>。此时处理，提前消除隐患，成本最低，体现对互联网的掌控能力。"},
-             'warning_b': {'name': 'B级', 'area': '省域', 'desc':'影响中等，引发政府公信力危机，分管领导有可能被问责。', 'advise':"<span style='color: orange'>积极回应，及时处理</span>。若及时处理，可转危为安，体现应急响应能力。"},
-             'warning_c': {'name': 'C级', 'area': '全国', 'desc':'影响恶劣，响应迟钝或者处理不当，地方一把手的执政能力会受到质疑。', 'advise':"<span style='color: orange'>积极参与处理或回应</span>。若积极回应，可与媒体积极互动，提高政府公信力。"}}
+# WSTATUSES = {'warning_a': {'name': 'A级', 'area': '区域', 'desc':'影响较小，易被忽略。但隐患正在积累，蓄势待发。', 'advise':"<span style='color: orange'>立即回应，进行处理</span>。此时处理，提前消除隐患，成本最低，体现对互联网的掌控能力。"},
+#              'warning_b': {'name': 'B级', 'area': '省域', 'desc':'影响中等，引发政府公信力危机，分管领导有可能被问责。', 'advise':"<span style='color: orange'>积极回应，及时处理</span>。若及时处理，可转危为安，体现应急响应能力。"},
+#              'warning_c': {'name': 'C级', 'area': '全国', 'desc':'影响恶劣，响应迟钝或者处理不当，地方一把手的执政能力会受到质疑。', 'advise':"<span style='color: orange'>积极参与处理或回应</span>。若积极回应，可与媒体积极互动，提高政府公信力。"}}
 
 
-# WSTATUSES = {
-#     "追踪"
-#     "A级": {"scope":"区域", "desc":"影响较小，易被忽略。但隐患正在积累，蓄势待发。", "advise":"积极关注，若研判为负面事件，立即处理。"},
-#              "B级":}
+WSTATUSES = {
+    "追踪中": {"scope":"小范围", "desc":"隐患正在追踪，未达预警门限。", "advise":"密切关注，避免小事变大。"},
+    "A级": {"scope":"区域", "desc":"影响较小，易被忽略。但隐患正在积累，蓄势待发。", "advise":"持续关注，若研判为负面事件，立即处理。"},
+    "B级": {"scope":"省域", "desc":"影响中等，若为地域负面热点，可能引发政府公信力危机。", "advise":"积极回应民众关切，及时处理相关问题。"},
+    "C级": {"scope":"全国", "desc":"影响极广，若为精准恶性事件，地方一把手执政能力或会遭受质疑。", "advise":"及时应对，积极处理，持续关注，避免二次扩散。"}}
 
 # 'warning_c': {'name': 'C级', 'area': '全国', 'desc':'影响恶劣，响应迟钝或者处理不当，地方一把手的执政能力会受到质疑。', 'advise':"<span style='color: orange'>立即处理</span>。若处理得当，可亡羊补牢，降低掉帽子的风险。"
 
@@ -202,10 +203,6 @@ DF_EVENTS_BASIC = pd.DataFrame()
 
 # 展示在全国图上的实时追踪区县
 df_trace_group = pd.DataFrame()
-
-# 'we0_value_index_trend'
-# 'we0_sens_word_trend'
-# 'we0_publisher_trend'
 
 # 服务器信息
 source_dict = {"ip":"120.78.222.247", "port":22, "uname":"root", "password":"zhikuspider"}
@@ -615,10 +612,31 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
                     GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)])
 
                 subtitle = "更新时间：%s" % str(version_date).split('.')[0]
+
             else:
                 title = "%s: %s历史走势" % (
                     GOV_NAMES[EVENTS_HEAD_IDS.index(events_head_id)], index_names[index_cols.index(index_col)])
                 subtitle = "最后一次追踪时间：%s" % df_event['do_time'].max()
+
+            warning_predict = []
+
+            # 判断有没有预警 —— 取最近那级预警，预警时间大于4天(96hrs)就不管了
+            warning_mark = ""
+            if (df_event.iloc[-1, :]["warning_c"] > 0) & (df_event.iloc[-1, :]["warning_c"] <= 96):
+                warning_predict = [df_event.iloc[-1, :]["warning_c"], c_thd]
+                warning_mark = "C级"
+                warning_hrs = df_event.iloc[-1, :]["warning_c"]
+            if (df_event.iloc[-1, :]["warning_b"] > 0) & (df_event.iloc[-1, :]["warning_b"] <= 96):
+                warning_predict = [df_event.iloc[-1, :]["warning_b"], b_thd]
+                warning_mark = "B级"
+                warning_hrs = df_event.iloc[-1, :]["warning_b"]
+            if (df_event.iloc[-1, :]["warning_a"] > 0) & (df_event.iloc[-1, :]["warning_a"] <= 96):
+                warning_predict = [df_event.iloc[-1, :]["warning_a"], a_thd]
+                warning_mark = "A级"
+                warning_hrs = df_event.iloc[-1, :]["warning_a"]
+
+            if not len(warning_predict):
+                warning_predict = None
 
             x_name_list = []
             event_index_list = []
@@ -632,26 +650,6 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
 
                 event_trace_data = [x_prelist, index_prelist]
                 warning_threshold_data = [a_thd, b_thd, c_thd]
-
-                warning_predict = []
-
-                # 判断有没有预警 —— 取最近那级预警，预警时间大于4天(96hrs)就不管了
-                warning_mark = ""
-                if (df_event.iloc[-1,:]["warning_c"] > 0) & (df_event.iloc[-1,:]["warning_c"] <= 96):
-                    warning_predict = [df_event.iloc[-1,:]["warning_c"], c_thd]
-                    warning_mark = "C级"
-                    warning_hrs = df_event.iloc[-1, :]["warning_c"]
-                if (df_event.iloc[-1,:]["warning_b"] > 0) & (df_event.iloc[-1,:]["warning_b"] <= 96):
-                    warning_predict = [df_event.iloc[-1,:]["warning_b"], b_thd]
-                    warning_mark = "B级"
-                    warning_hrs = df_event.iloc[-1, :]["warning_b"]
-                if (df_event.iloc[-1,:]["warning_a"] > 0) & (df_event.iloc[-1,:]["warning_a"] <= 96):
-                    warning_predict = [df_event.iloc[-1,:]["warning_a"], a_thd]
-                    warning_mark = "A级"
-                    warning_hrs = df_event.iloc[-1,:]["warning_a"]
-
-                if not len(warning_predict):
-                    warning_predict = None
 
                 fit_results = lineFitting.get_trace_event_all_line(event_trace_data, warning_threshold_data, warning_predict)
 
@@ -865,10 +863,24 @@ def get_warning_indexes_lines_data(df_warning_trace_info, parameters, version_da
             linewidth = 3
             xfont = {"xfont":12, "fontWeight":"normal", "color":FT_PURE_WHITE}
             signname = ['A级', 'B级', 'C级']
+
+            # 更改title —— 2018/12/6
+            title = ""
+            subtitle = ""
+            if warning_predict is not None:
+                title += "2861系统预警：约<span style='color:%s;font-weight:bold;'>%d小时</span>后，本事件影响范围将达：<span style='color:%s;font-weight:bold;'>%s级</span>，传播覆盖人次将达%s。（预测准确性：%.2f%%"%(UN_TITLE_YELLOW, warning_hrs, UN_TITLE_YELLOW, WSTATUSES[warning_mark]["scope"], get_proper_unit_data(thds_dict[warning_mark]/0.0019), df_event["weibo_value"].values[0]*100/thds_dict[warning_mark])
+                subtitle += "<span style='color:%s'><span style='color:%s;font-size:20px;font-weight:bold'>预警事态：</span>%s<br/><span style='color:%s;font-size:20px;font-weight:bold'>预警建议：</span>%s</span>"%(FT_PURE_WHITE, UN_TITLE_YELLOW, WSTATUSES[warning_mark]["desc"], UN_TITLE_YELLOW, WSTATUSES[warning_mark]["advise"])
+            else:
+                title += "2861系统预警：本事件当前影响范围：<span style='color:%s;font-weight:bold;'>%s级</span>，传播覆盖人次约%s。" % (UN_TITLE_YELLOW, DF_EVENTS_BASIC[DF_EVENTS_BASIC.events_head_id == events_head_id]["scope_grade"].values[0], get_proper_unit_data(df_event["weibo_value"].max() / 0.0019))
+                subtitle += "<span style='color:%s'><span style='color:%s;font-size:20px;font-weight:bold'>当前事态：</span>%s<br/><span style='color:%s;font-size:20px;font-weight:bold'>当前建议：</span>%s</span>" % (
+                FT_PURE_WHITE, UN_TITLE_YELLOW, WSTATUSES[DF_EVENTS_BASIC[DF_EVENTS_BASIC.events_head_id == events_head_id]["thd_grade"].values[0]]["desc"], UN_TITLE_YELLOW,
+                WSTATUSES[DF_EVENTS_BASIC[DF_EVENTS_BASIC.events_head_id == events_head_id]["thd_grade"].values[0]]["advise"])
+
             index_line_dict = get_lines_graph_dict(title, subtitle, df_id, df_info, y_name,linewith=linewidth, xfont=xfont, signname=signname, signlist=signlist, max_thd=max_thd, tickx=tickx)
             # index_line_dict = get_mixed_line_dict(title, subtitle, df_id, tips=tips)
             warning_line_data_list.append(index_line_dict)
             warning_line_data_name_list.append('%s_%s_index_trend' % (EVENTS_SHORT_DICT[events_head_id], index_col.split('_')[-1]))
+
     return warning_line_data_list, warning_line_data_name_list
 
 
@@ -2231,7 +2243,7 @@ def assign_events_related_global_variables(node_code):
     # thd_dict = {"A级": a_thd, "B级": b_thd, "C级": c_thd}
     thds = [c_thd, b_thd, a_thd]
     thd_desc = ["C级", "B级", "A级", "追踪中"]  # 空格表示追踪中，没到三级预警门限
-    thd_scopes = ["全国", "省域", "区域", "追踪中"]  # 空格表示追踪中，没到三级预警门限
+    thd_scopes = ["全国", "省域", "区域", "小范围"]  # 空格表示追踪中，没到三级预警门限
 
     # gov_ids = []
     # gov_names = []
@@ -2321,7 +2333,7 @@ def assign_events_related_global_variables(node_code):
     for index, row in df_trace_group.iterrows():
 
         df_gov = DF_EVENTS_BASIC[DF_EVENTS_BASIC["gov_name"] == row["name"]]
-        df_gov = df_gov.sort_values(by=["newly_weibo_value"], ascending=False)
+        df_gov = df_gov.sort_values(by=["newly_weibo_value"], ascending=False).reset_index(drop=True)
 
         # 判断本县最严重事件的等级，确定柱状气泡地图
         gov_bubble_color = WCOLORS[df_gov["thd_grade"].values[0][0]]
@@ -2489,20 +2501,20 @@ def web_leaves_datafile(provinces, monitor_time, same_provs):
             # p.close()
             # p.join()
 
-        # # 压缩数据 —— 保证每个node_code有数据的话，都在外面执行操作
-        # tar_file_name = node_code + '_apps.tar.gz'
-        # server_tar_file_path = gz_path + '/' + tar_file_name
-        # # server_src_zip = '../'
-        # # gz_cmd = "cd %s; tar -zcvf %s %s" % (server_src_zip, server_tar_file_path, 'apps/' + node_code)
-        # gz_cmd = "tar -zcvf %s %s" % (server_tar_file_path, '../apps/' + node_code)
-        # os.system(gz_cmd)
+        # 压缩数据 —— 保证每个node_code有数据的话，都在外面执行操作
+        tar_file_name = node_code + '_apps.tar.gz'
+        server_tar_file_path = gz_path + '/' + tar_file_name
+        # server_src_zip = '../'
+        # gz_cmd = "cd %s; tar -zcvf %s %s" % (server_src_zip, server_tar_file_path, 'apps/' + node_code)
+        gz_cmd = "tar -zcvf %s %s" % (server_tar_file_path, '../apps/' + node_code)
+        os.system(gz_cmd)
 
-        # 打包由gz改为zip —— 2018/12/6
-        zip_file_name = node_code + '_apps.zip'
-        server_zip_file_path = gz_path + '/' + zip_file_name
-        server_zip_src = '../apps/'
-        zip_cmd = "cd %s; zip -q -r %s %s" % (server_zip_src, server_zip_file_path, node_code)
-        os.system(zip_cmd)
+        # # 打包由gz改为zip —— 2018/12/6 后恢复
+        # zip_file_name = node_code + '_apps.zip'
+        # server_zip_file_path = gz_path + '/' + zip_file_name
+        # server_zip_src = '../apps/'
+        # zip_cmd = "cd %s; zip -q -r %s %s" % (server_zip_src, server_zip_file_path, node_code)
+        # os.system(zip_cmd)
 
         node_end_datetime = datetime.now()
         with open('./trace_info_record.txt', 'a', encoding='utf-8') as fp_out:
